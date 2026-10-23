@@ -56,9 +56,11 @@ That's it. Memory is fully automatic from here: recall before each turn, retain 
 
 - **Auto-recall:** Before each agent turn, relevant memories from your project and global banks are injected into the prompt.
 - **Auto-retain:** After each agent turn, the conversation is appended to a per-session memory document. Only the new delta is processed, no redundant work.
-- **Graceful flush:** Pending async retains are drained before shutdown, session switch, fork, and compaction.
+- **Graceful flush:** Pending async retains are drained before shutdown, session switch, fork, and compaction. Hung requests are aborted at the configurable flush deadline.
+- **Secret redaction:** Common API keys, bearer tokens, passwords, and similar credentials are redacted before retain by default.
 - **Feedback loop prevention:** Memory blocks are stripped from retained content. No recursive memory bloat.
-- **Noise filtering:** Low-signal tool calls (bash, read, write, edit) are dropped from retained transcripts. Conversation and meaningful tool usage are kept.
+- **Noise filtering:** Low-signal tool calls (bash, read, write, edit, find, ls, powershell, etc.) are dropped from retained transcripts. Conversation and meaningful tool usage are kept.
+- **Retain metadata:** Auto and manual retains include source, project, session, bank, and mode metadata.
 
 ### Per-prompt controls
 
@@ -139,7 +141,13 @@ recall_max_tokens = 512
 | `async_retain` | `true` | Non-blocking retain. Set `false` for sync retain with failure notifications. |
 | `recall_enabled` | `true` | Enable automatic recall before agent turns. Set `false` to disable auto-recall for this project. Manual `hindsight_recall` tool still works. |
 | `retain_enabled` | `true` | Enable automatic retain after agent turns. Set `false` to disable auto-retain for this project. Manual `hindsight_retain` tool still works. |
-| `homedir_project` | `true` | Treat home directory as a project. Set `false` to prevent creating a `project-<username>` bank when running Pi from your home directory. Recall and retain use only `global_bank` instead. |
+| `redact_secrets` | `true` | Redact common credentials from auto- and manually-retained content before sending it to Hindsight. |
+| `auto_missions` | `true` | Automatically configure retain/observations missions on the active banks at session start. Set `false` to manage bank missions yourself. |
+| `recall_timeout` | `10000` | Timeout in milliseconds for recall requests. |
+| `reflect_timeout` | `60000` | Timeout in milliseconds for the manual reflect tool. |
+| `retain_timeout` | `60000` | Timeout in milliseconds for individual retain requests. |
+| `flush_timeout` | `30000` | Maximum time to wait for pending retains during shutdown, switch, fork, or compaction. Requests still pending are aborted. |
+| `homedir_project` | `true` | Treat home directory as a project. Set `false` to prevent creating a `project-<username>` bank when running from your home directory. Recall and retain use only `global_bank` instead. |
 | `global_bank` | _(none)_ | Bank ID for cross-project memory. When set, this bank is queried alongside the project bank on every recall. Turns tagged `#global` or `#me` are also retained here. Leave unset if you only want per-project memory. |
 
 ## Commands
@@ -150,8 +158,10 @@ Full health check: server reachability, auth, bank access, hook state, debug log
 ```
 URL:    http://localhost:8888
 Server: ✓ online
+API:    1.1.0
 Bank:   project-myapp
   ✓ auth ok
+  mission: Focus on coding conventions...
 Global: global-bank
 
 Hooks this session:
@@ -163,7 +173,7 @@ Debug log: disabled (set HINDSIGHT_DEBUG=1 to enable)
 ```
 
 ### `/hindsight stats`
-Memory, entity, and document counts for all active banks.
+Memory, entity, and document counts for all active banks. Nested values are shown as JSON rather than `[object Object]`.
 
 ### `/hindsight settings`
 Interactive settings menu. View all current settings with their source (global, project, or default), toggle boolean settings, edit text values, and choose where to save (project or global config). When running from the home directory, saves go to global config only.
@@ -357,4 +367,7 @@ This project uses [pnpm](https://pnpm.io/).
 pnpm install
 pnpm test
 pnpm check
+pnpm check:sync
 ```
+
+`check:sync` rebuilds `index.js` and fails if the committed generated file is out of date.
