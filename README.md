@@ -56,6 +56,7 @@ That's it. Memory is fully automatic from here: recall before each turn, retain 
 
 - **Auto-recall:** Before each agent turn, relevant memories from your project and global banks are injected into the prompt.
 - **Auto-retain:** After each agent turn, the conversation is appended to a per-session memory document. Only the new delta is processed, no redundant work.
+- **Graceful flush:** Pending async retains are drained before shutdown, session switch, fork, and compaction.
 - **Feedback loop prevention:** Memory blocks are stripped from retained content. No recursive memory bloat.
 - **Noise filtering:** Low-signal tool calls (bash, read, write, edit) are dropped from retained transcripts. Conversation and meaningful tool usage are kept.
 
@@ -261,7 +262,7 @@ This section aims to help you pick the right one. Both are good.
 | Content retained | User + assistant + non-operational tool calls | User + assistant text (turn summary) |
 | Document strategy | Append-mode with stable `document_id` per session | Per-turn writes, chunked if large |
 | Credential sanitization | No | Yes (strips API keys, tokens, secrets) |
-| Session lifecycle | Resets on `session_compact` | Flushes on shutdown, switch, compact, fork |
+| Session lifecycle | Flushes on shutdown, switch, compact, fork | Flushes on shutdown, switch, compact, fork |
 
 **What the differences mean:**
 
@@ -269,7 +270,7 @@ This section aims to help you pick the right one. Both are good.
 - **Retain content.** This extension retains the full transcript including tool call names and inputs (excluding noisy operational tools like `bash`, `read`, `write`). This gives Hindsight richer context for extraction. `@walodayeet/hindsight-pi` retains a user+assistant text summary, which is lighter but may lose tool-use context.
 - **Append mode.** This extension uses `document_id` + `update_mode: append`, so Hindsight only re-extracts the new delta each turn rather than reprocessing the entire session. `@walodayeet/hindsight-pi` writes each turn as separate retain calls, which is simpler but means each turn is processed independently.
 - **Credential sanitization.** `@walodayeet/hindsight-pi` strips API keys, bearer tokens, and secrets from retained content before sending to the server. This extension does not, so secrets in conversation may end up in your Hindsight memory. If you work with credentials in chat, this matters.
-- **Session lifecycle.** `@walodayeet/hindsight-pi` hooks into more Pi lifecycle events (shutdown, switch, fork) to flush pending writes. This extension only resets state on `session_compact`. If Pi exits abruptly with `session`-mode batching, `@walodayeet/hindsight-pi` is more likely to flush pending writes.
+- **Session lifecycle.** Both extensions hook into session lifecycle events to flush pending writes. This extension drains in-flight async retains on shutdown, session switch, fork, and compaction.
 
 ### Per-prompt controls
 
@@ -356,5 +357,4 @@ This project uses [pnpm](https://pnpm.io/).
 pnpm install
 pnpm test
 pnpm check
-pnpm exec vitest run
 ```

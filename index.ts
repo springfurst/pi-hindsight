@@ -519,6 +519,42 @@ export default function hindsightExtension(pi: ExtensionAPI) {
   let retainEligibleCount = 0;
   let currentPrompt = "";
 
+  // Async retains are fire-and-forget during normal turns, but they must be
+  // drained before Pi tears down or replaces the session runtime.
+  const pendingRetains = new Set<Promise<unknown>>();
+  const RETAIN_FLUSH_TIMEOUT_MS = 30000;
+
+  function trackRetain(promise: Promise<unknown>): void {
+    pendingRetains.add(promise);
+    promise
+      .finally(() => pendingRetains.delete(promise))
+      .catch(() => {});
+  }
+
+  async function flushPendingRetains(reason: string): Promise<void> {
+    if (pendingRetains.size === 0) return;
+
+    const pending = Array.from(pendingRetains);
+    log(`flush(${reason}): waiting for ${pending.length} pending retain(s)`);
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(pending),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            log(`flush(${reason}): timed out with ${pendingRetains.size} retain(s) still pending`);
+            resolve();
+          }, RETAIN_FLUSH_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+
+    log(`flush(${reason}): complete`);
+  }
+
   // Track user input for fallback
   pi.on("input", async (event: any) => {
     if (event.input) currentPrompt = event.input;
@@ -575,6 +611,7 @@ export default function hindsightExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_compact", async (_event, ctx) => {
+    await flushPendingRetains("compact");
     sessionCwd = ctx.cwd || process.cwd();
     recallDone = false;
     recallAttempts = 0;
@@ -582,6 +619,18 @@ export default function hindsightExtension(pi: ExtensionAPI) {
     retainEligibleCount = 0;
     ctx.ui.setStatus("hindsight", undefined);
     log("session_compact: state reset");
+  });
+
+  pi.on("session_before_switch", async (event) => {
+    await flushPendingRetains(`switch:${event.reason}`);
+  });
+
+  pi.on("session_before_fork", async () => {
+    await flushPendingRetains("fork");
+  });
+
+  pi.on("session_shutdown", async (event) => {
+    await flushPendingRetains(`shutdown:${event.reason}`);
   });
 
   pi.registerMessageRenderer("hindsight-recall", (message, _options, theme) => {
@@ -1002,6 +1051,7 @@ export default function hindsightExtension(pi: ExtensionAPI) {
           return bank;
         })
       );
+      trackRetain(retainPromise);
       retainPromise.then((results) => {
         const succeededBanks = results
           .filter(r => r.status === "fulfilled")
@@ -1044,7 +1094,7 @@ export default function hindsightExtension(pi: ExtensionAPI) {
     try {
       log(`agent_end: retaining to banks=${banks.join(",")} transcript_len=${transcript.length} tags=${extractedTags.join(",")}`);
 
-      const results = await Promise.allSettled(
+      const resultsPromise = Promise.allSettled(
         banks.map(async (bank) => {
           const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/memories`, {
             method: "POST",
@@ -1069,6 +1119,8 @@ export default function hindsightExtension(pi: ExtensionAPI) {
           return bank;
         })
       );
+      trackRetain(resultsPromise);
+      const results = await resultsPromise;
 
       const succeededBanks = results
         .filter(r => r.status === "fulfilled")

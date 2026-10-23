@@ -31,7 +31,8 @@
     ]
   },
   "scripts": {
-    "test": "node --experimental-strip-types test.ts",
+    "test": "node --experimental-strip-types test.ts && vitest run",
+    "test:node": "node --experimental-strip-types test.ts",
     "test:mission": "vitest run __tests__/mission-setup.test.ts",
     "build": "tsc index.ts",
     "check": "pnpm build"
