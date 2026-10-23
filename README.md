@@ -350,6 +350,11 @@ Both extensions:
 
 ## Running tests
 
+This project uses [pnpm](https://pnpm.io/).
+
 ```bash
-node --experimental-strip-types test.ts
+pnpm install
+pnpm test
+pnpm check
+pnpm exec vitest run
 ```

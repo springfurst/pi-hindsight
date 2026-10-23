@@ -2,7 +2,7 @@
  * Hindsight Self-Hosted Extension for Pi
  * Fully autonomous memory via lifecycle hooks.
  */
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";

@@ -1,0 +1,2 @@
+patchedDependencies:
+  '@marcfargas/pi-test-harness@0.6.1': patches/@marcfargas__pi-test-harness@0.6.1.patch

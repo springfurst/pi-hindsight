@@ -3,8 +3,8 @@
  * Fully autonomous memory via lifecycle hooks.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
