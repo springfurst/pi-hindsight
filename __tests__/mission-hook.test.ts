@@ -15,16 +15,20 @@ describe("session_start hook fires mission auto-setup", () => {
   let tmpHome: string;
   let fetchCalls: { url: string; method: string; body?: any }[];
   let originalFetch: typeof globalThis.fetch;
-  let originalHome: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
 
   beforeEach(() => {
     fetchCalls = [];
     originalFetch = globalThis.fetch;
-    originalHome = process.env.HOME!;
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
 
     // Temp HOME so cache + config don't touch real files
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "mission-hook-test-"));
     process.env.HOME = tmpHome;
+    // os.homedir() uses USERPROFILE on Windows and HOME elsewhere.
+    process.env.USERPROFILE = tmpHome;
 
     // Create hindsight config so extension loads
     const hindsightDir = path.join(tmpHome, ".hindsight");
@@ -84,7 +88,10 @@ describe("session_start hook fires mission auto-setup", () => {
   afterEach(() => {
     t?.dispose();
     globalThis.fetch = originalFetch;
-    process.env.HOME = originalHome;
+    if (originalHome !== undefined) process.env.HOME = originalHome;
+    else delete process.env.HOME;
+    if (originalUserProfile !== undefined) process.env.USERPROFILE = originalUserProfile;
+    else delete process.env.USERPROFILE;
     if (fs.existsSync(tmpHome)) {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }

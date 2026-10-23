@@ -1,6 +1,4 @@
----
-sidebar_position: 5
----
+
 
 # Multilingual Support
 
@@ -8,13 +6,26 @@ Hindsight automatically detects the language of your input and responds in the s
 
 ## How It Works
 
-```mermaid
-graph LR
-    A[Chinese Input] --> B[Language Detection]
-    B --> C[Extract Facts in Chinese]
-    C --> D[Chinese Entities]
-    D --> E[Chinese Response]
-```
+**Figure: Multilingual Support.** An animated diagram on the docs site; its narration, step by step:
+
+- **retain()**
+  1. Your agent retains Chinese text that mentions English company names.
+  2. There is no separate language detector. The LLM is told to write facts in the language of the input, and to keep names as they are.
+  3. Facts are stored in Chinese. 王芳 stays 王芳, not “Wang Fang”, and Google stays Google.
+  4. Indexing is where language matters. The default embedding model and keyword index are English-only; pick a multilingual model and a tokenizer that can split Chinese.
+  5. Stored, in the language it came in.
+- **recall()**
+  1. A query in Chinese.
+  2. The multilingual embeddings match by meaning; the tokenizer lets the exact name 王芳 match as a word.
+  3. Both point to the Chinese facts. The reranker that then orders them is English-only by default too, so pick a multilingual one.
+  4. The facts come back exactly as stored. Nothing was translated on the way.
+- **reflect()**
+  1. A question in Chinese.
+  2. Reflect searches the bank like before…
+  3. …through the same indexes…
+  4. …and finds both facts.
+  5. The answer is written in the language of the question.
+  6. To force one language everywhere instead, set HINDSIGHT_API_LLM_OUTPUT_LANGUAGE.
 
 When you retain content or reflect on a query, Hindsight:
 
@@ -32,13 +43,13 @@ When you retain content in any language, Hindsight extracts and stores facts in 
 ### Example: Chinese Content
 
 ```python
-from hindsight import Hindsight
+from hindsight_client import Hindsight
 
-hindsight = Hindsight()
+hindsight = Hindsight(base_url=HINDSIGHT_URL)
 
 # Retain Chinese content
 hindsight.retain(
-    bank_id="user-123",
+    bank_id="multilingual-user",
     content="""
     张伟是一位资深软件工程师，在腾讯工作了五年。
     他专门研究分布式系统，并领导了公司微服务架构的开发。
@@ -48,7 +59,7 @@ hindsight.retain(
 
 # Query in Chinese - get Chinese results
 results = hindsight.recall(
-    bank_id="user-123",
+    bank_id="multilingual-user",
     query="告诉我关于张伟的信息"
 )
 
@@ -61,7 +72,7 @@ results = hindsight.recall(
 
 ```python
 hindsight.retain(
-    bank_id="user-123",
+    bank_id="multilingual-user",
     content="""
     田中さんはソフトウェアエンジニアで、東京のスタートアップで働いています。
     彼女はPythonとTypeScriptが得意で、毎日コードレビューをしています。
@@ -71,7 +82,7 @@ hindsight.retain(
 
 # Query in Japanese
 results = hindsight.recall(
-    bank_id="user-123",
+    bank_id="multilingual-user",
     query="田中さんについて教えてください"
 )
 ```
@@ -87,20 +98,20 @@ The `reflect` operation also respects the input language, generating thoughtful 
 ```python
 # Store facts about team members (in Chinese)
 hindsight.retain(
-    bank_id="team-eval",
+    bank_id="multilingual-team-eval",
     content="张伟是一位优秀的软件工程师，完成了五个重大项目。他总是按时交付，代码整洁有良好的文档。",
     context="绩效评估"
 )
 
 hindsight.retain(
-    bank_id="team-eval",
+    bank_id="multilingual-team-eval",
     content="李明最近加入团队。他错过了第一个截止日期，代码有很多bug。",
     context="绩效评估"
 )
 
 # Reflect in Chinese
 result = hindsight.reflect(
-    bank_id="team-eval",
+    bank_id="multilingual-team-eval",
     query="谁是更可靠的工程师？"
 )
 
@@ -118,7 +129,7 @@ Hindsight handles mixed-language content gracefully, preserving both languages w
 
 ```python
 hindsight.retain(
-    bank_id="user-123",
+    bank_id="multilingual-user",
     content="""
     王芳在Google北京办公室工作，她是一名高级产品经理。
     之前她在Microsoft和Amazon工作过。
@@ -153,7 +164,7 @@ Most modern LLMs (GPT-4, Claude, Gemini, Llama 3, etc.) support dozens of langua
 
 ## Configuring for Multilingual Use
 
-For optimal multilingual performance, you should configure all three components of the pipeline:
+For optimal multilingual performance, configure all four components of the pipeline:
 
 ### 1. LLM (Required)
 Your LLM must support the target languages. Most modern LLMs do, but verify with your specific model.
@@ -186,6 +197,73 @@ HINDSIGHT_API_RERANKER_LOCAL_MODEL=BAAI/bge-reranker-v2-m3
 |-------|-----------|-------|
 | `BAAI/bge-reranker-v2-m3` | 100+ | Best multilingual reranking |
 | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | 14 | Lighter alternative |
+
+### 4. BM25 / Full-Text Search Backend
+
+The semantic (embedding) arm covers cross-lingual matches by meaning. Hindsight runs a BM25 keyword arm in parallel, and **BM25 is inherently within-language** — it's character/token matching against a tokenizer's lexemes. The default `native` backend uses PostgreSQL's English dictionary, which produces poor results for non-English content (and no useful tokenization at all for Chinese / Japanese / Korean, which lack whitespace word boundaries).
+
+There are two knobs that interact:
+
+- `HINDSIGHT_API_TEXT_SEARCH_EXTENSION` — selects the backend (`native`, `vchord`, `pg_textsearch`, `pgroonga`, or `pg_search`).
+- `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE` — selects the PostgreSQL dictionary used by the `native` backend (default: `english`).
+
+Pick the backend based on the languages your bank stores:
+
+| Backend | Multilingual / CJK | Notes |
+|---------|--------------------|-------|
+| `native` | European languages only (English, French, German, Spanish, Italian, Portuguese, Russian, Dutch, Swedish, Norwegian, Danish, Finnish, Hungarian, Turkish, Arabic, plus `simple`). CJK requires a third-party dictionary like `zhparser`. | Stock PostgreSQL — no extra extensions. Configure the language via `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE`. |
+| `vchord` | Multilingual via `llmlingua2` tokenizer. | Best when you're already using vchord for vector search. |
+| `pg_textsearch` | English only (hardcoded). | Industry-standard BM25 ranking + Block-Max WAND. |
+| `pgroonga` | **Yes — out of the box.** Single index handles English, CJK, and mixed-script content via the `TokenBigram` polyglot tokenizer + `NormalizerNFKC150` Unicode normalization. | Recommended for non-English / mixed-language banks. Requires the `pgroonga` extension. See `docker/docker-compose/pgroonga/`. |
+| `pg_search` | Multilingual via configurable tokenizer (e.g. `chinese_compatible`, `jieba`, `chinese_lindera`, `japanese_lindera`, `korean_lindera`, `ngram`). | ParadeDB `pg_search` extension; the only Citus-compatible BM25 backend. Tokenizer set via `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_TOKENIZER`. See `docker/docker-compose/pg_search/`. |
+
+**Choosing for a single-language bank** (e.g. all Spanish content):
+```bash
+HINDSIGHT_API_TEXT_SEARCH_EXTENSION=native
+HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE=spanish
+```
+
+**Choosing for a CJK or mixed-language bank**:
+```bash
+HINDSIGHT_API_TEXT_SEARCH_EXTENSION=pgroonga
+```
+
+> **📝 External PostgreSQL required**
+>
+
+The `pgroonga` and `pg_search` backends depend on PostgreSQL extensions that are **not** bundled with the embedded `pg0` database Hindsight uses when `HINDSIGHT_API_DATABASE_URL` is unset. On that default single-container setup neither backend can be enabled — point `HINDSIGHT_API_DATABASE_URL` at an external PostgreSQL that has the extension installed, as the `docker/docker-compose/pgroonga/` and `docker/docker-compose/pg_search/` recipes do.
+
+The `native` and `pgroonga` knobs do not apply to each other — `pgroonga`'s tokenizer is set at index creation and ignores `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE`.
+
+#### Forcing the LLM Output Language
+
+Independent from the BM25 backend, `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` forces every LLM-generated artifact into a single language regardless of the source content. This applies uniformly to:
+
+- **Retain** — fact text, context, and entity names extracted from source documents.
+- **Consolidation** — observations / mental models synthesized from those facts.
+- **Reflect** — the final natural-language response returned by the reflect API.
+
+```bash
+# Every LLM call (retain, consolidation, reflect) emits Spanish regardless of source language.
+HINDSIGHT_API_LLM_OUTPUT_LANGUAGE=Spanish
+```
+
+Common patterns:
+- **Aligned, single-language bank**: `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_NATIVE_LANGUAGE=spanish` + `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE=Spanish` — store, index, and respond in Spanish even when sources are mixed.
+- **Mixed-language bank with multilingual indexing**: `HINDSIGHT_API_TEXT_SEARCH_EXTENSION=pgroonga` + leave `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` unset — preserve source-language facts; pgroonga handles all of them in one index; reflect responds in the query's language.
+- **Cross-lingual unification**: `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE=English` — every fact, observation, and reflect response in English regardless of source. Useful when the consumer (an English-only LLM, dashboard, or downstream pipeline) needs uniform output.
+
+Leave `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` unset to preserve the source/query language across the pipeline (the default).
+
+#### Default behaviour when no output language is set
+
+With `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` unset, retain and consolidation are both instructed to keep their output in the language of the source material. For observations specifically:
+
+- **Language is decided per observation**, from the facts that observation is built on — not from the batch. A batch mixing Chinese and English facts produces Chinese observations for the Chinese facts and English observations for the English ones. When a single observation merges facts written in several languages, the majority language of those facts wins.
+- **Updates follow the new facts.** When an existing observation is written in a different language from the facts updating it, the whole observation is rewritten in the new facts' language. A bank whose observations previously drifted into the wrong language converges back as new facts arrive.
+- **Names and technical terms are never translated** — proper nouns, product and place names, identifiers, code, and units stay as written in the source facts, whatever the surrounding language.
+
+This is prompt-level guidance, not a hard guarantee: a model that ignores instructions can still emit the wrong language. Set `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` explicitly when a bank must be single-language no matter what its sources look like.
 
 ---
 

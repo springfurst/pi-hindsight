@@ -7,11 +7,12 @@ When you **retain** content, Hindsight doesn't just store the raw text—it inte
 
 {/* Import raw source files */}
 
-:::info How Retain Works
-Learn about fact extraction, entity resolution, and graph construction in the [Retain Architecture](../retain.md) guide.
+> **ℹ️ How Retain Works**
+>
+Learn about fact extraction, entity resolution, and graph construction in the [Retain Architecture](..\retain.md) guide.
 > **💡 Prerequisites**
-> 
-Make sure you've completed the [Quick Start](./quickstart) to install the client and start the server.
+>
+Make sure you've completed the [Quick Start](./quickstart.md) to install the client and start the server.
 ## Store a Document
 
 A single retain call accepts one or more **items**. Each item is a piece of raw content — a conversation, a document, a note — that Hindsight will analyze and decompose into one or many memories. The content itself is never stored verbatim; what gets stored are the structured facts the LLM extracts from it.
@@ -40,7 +41,12 @@ hindsight memory retain my-bank "Alice works at Google as a software engineer"
 ### Go
 
 ```go
-# Section 'retain-basic' not found in api/retain.go
+client.MemoryAPI.RetainMemories(ctx, "my-bank").
+	RetainRequest(hindsight.RetainRequest{
+		Items: []hindsight.MemoryItem{
+			{Content: hindsight.TextContent("Alice works at Google as a software engineer")},
+		},
+	}).Execute()
 ```
 
 ### Retaining a Conversation
@@ -109,7 +115,29 @@ hindsight memory retain my-bank "$CONVERSATION" \
 ### Go
 
 ```go
-# Section 'retain-conversation' not found in api/retain.go
+// Retain an entire conversation as a single document.
+conversation := "Alice (2024-03-15T09:00:00Z): Hi Bob! Did you end up going to the doctor last week?\n" +
+	"Bob (2024-03-15T09:01:00Z): Yes, finally. Turns out I have a mild peanut allergy.\n" +
+	"Alice (2024-03-15T09:02:00Z): Oh no! Are you okay?\n" +
+	"Bob (2024-03-15T09:03:00Z): Yeah, nothing serious. Just need to carry an antihistamine.\n" +
+	"Alice (2024-03-15T09:04:00Z): Good to know. We'll avoid peanuts at the team lunch."
+
+docID := "chat-2024-03-15-alice-bob"
+context_ := "team chat"
+ts := "2024-03-15T09:04:00Z"
+client.MemoryAPI.RetainMemories(ctx, "my-bank").
+	RetainRequest(hindsight.RetainRequest{
+		Items: []hindsight.MemoryItem{
+			{
+				Content:    hindsight.TextContent(conversation),
+				Context:    *hindsight.NewNullableString(&context_),
+				DocumentId: *hindsight.NewNullableString(&docID),
+				Timestamp: *hindsight.NewNullableTimestamp(&hindsight.Timestamp{
+					String: &ts,
+				}),
+			},
+		},
+	}).Execute()
 ```
 
 When the conversation grows — a new message arrives — just retain again with the full updated content and the same `document_id`. Hindsight will delete the previous version and reprocess from scratch, so memories always reflect the latest state of the conversation.
@@ -170,12 +198,27 @@ hindsight memory retain my-bank "Alice got promoted" \
 ### Go
 
 ```go
-# Section 'retain-with-context' not found in api/retain.go
+ctxLabel := "career update"
+ts2 := "2024-03-15T10:00:00Z"
+client.MemoryAPI.RetainMemories(ctx, "my-bank").
+	RetainRequest(hindsight.RetainRequest{
+		Items: []hindsight.MemoryItem{
+			{
+				Content: hindsight.TextContent("Alice got promoted to senior engineer"),
+				Context: *hindsight.NewNullableString(&ctxLabel),
+				Timestamp: *hindsight.NewNullableTimestamp(&hindsight.Timestamp{
+					String: &ts2,
+				}),
+			},
+		},
+	}).Execute()
 ```
 
 ### metadata
 
 Arbitrary key-value string pairs that provide context about this item. For example: `{"source": "slack", "channel": "engineering", "thread_id": "T123"}`. Metadata is included in the fact extraction prompt, so the LLM can use it as additional context when extracting facts — for instance, knowing the document title or source can improve accuracy. It is also stored on each memory unit and returned with every recalled memory, letting you do client-side filtering or static enrichment without extra lookups — for example, linking a memory back to its source URL, thread ID, or any application-specific identifier.
+
+Values are stored and returned as strings. A key whose value is `null` is dropped rather than stored, so it will not come back on the recalled memory — send an empty string if you need the key to survive.
 
 ### document_id
 
@@ -183,7 +226,17 @@ A caller-supplied string that groups one or more items under a logical document.
 
 When you provide a `document_id`, Hindsight upserts the document: if a document with that ID already exists in the bank, it and all its associated memories are deleted before the new content is processed and inserted. This means you can safely re-run retain on updated content — for example, a chat thread that grew since last time — without accumulating duplicate memories.
 
-If you omit `document_id`, Hindsight assigns a random UUID per request, so re-ingesting the same content will create duplicate memories.
+If you omit `document_id`, Hindsight assigns a random UUID, so re-ingesting the same content will create duplicate memories. How items without a `document_id` are grouped depends on the rest of the request:
+
+| Request | Result |
+|---------|--------|
+| No item has a `document_id` | All items go into **one** new document. A request too large for one pass (over `HINDSIGHT_API_RETAIN_BATCH_TOKENS`) is split into parts, and each part becomes its own document. |
+| Some items have a `document_id`, others don't | Each item without one becomes its **own** new document. It is never folded into another item's document, so replacing or deleting that document leaves it alone. |
+| Items share the same `document_id` | Those items go into that one document, in request order. |
+
+An item with an attachment always gets its own document when it has no `document_id`, so it counts as an item *with* one in the table above.
+
+To keep every item separate, give each one its own `document_id`. To put several items in one document, give them the same `document_id`.
 
 ### update_mode
 
@@ -216,19 +269,30 @@ A list of entities you want to guarantee are recognized, merged with any entitie
 
 Use this when you know certain entities are important but the LLM might miss them or refer to them inconsistently across different parts of the content. Providing entities explicitly ensures they are always linked in the knowledge graph.
 
+### resolve_entities
+
+By default the names you pass in `entities` are **resolved** against the entities already in the bank: a name close to an existing one may be matched onto it rather than creating its own entity, based on name similarity plus how strongly it co-occurs with the other names in the same item. That is usually what you want — it is how `Dr. Waller` and `Dr Waller` end up as one entity instead of two.
+
+Set `resolve_entities: false` when the names you are passing are authoritative and must be stored exactly as written. An existing entity is then reused only when its name matches case-insensitively, any other name creates a new entity, and your names are never merged with each other (`Alice` and `Alice Smith` stay two entities).
+
+This applies **only to the entities you supply**. Auto-extracted entities are always resolved, because they are the extractor's guess at a name rather than yours — turning resolution off for them would fill the bank with near-duplicate entities.
+
+The same flag exists on [editing a memory](./memories.md#resolving-entity-names), where it matters most: a correction you type by hand is exactly the case where a similar existing entity should not win.
+
 ### tags and document_tags
 
 Tags control **visibility scoping** — which memories are visible during recall. A memory is only returned if its tags intersect with the tags filter provided in the recall request. This makes tags useful when a single memory bank serves multiple users or sessions and each should only see their own memories.
 
 Use consistent naming patterns to keep tag filtering predictable. Common conventions: `user:<id>` for per-user scoping, `session:<id>` for session isolation, `room:<id>` for chat rooms, `topic:<name>` for category filtering. The bank also exposes a list-tags endpoint that returns all tags with their memory counts, useful for UI autocomplete or wildcard expansion.
 
-See [Recall API](./recall#tags) for filtering by tags during retrieval.
+See [Recall API](./recall.md#tags) for filtering by tags during retrieval.
 
 ### observation_scopes
 
-Controls which [observations](../observations) this memory contributes to during consolidation. Each scope runs an independent pass, creating or updating observations tagged with only that scope's tags.
+Controls which [observations](../observations.md) this memory contributes to during consolidation. Each scope runs an independent pass, creating or updating observations tagged with only that scope's tags.
 
-:::info Scope isolation
+> **ℹ️ Scope isolation**
+>
 During consolidation, Hindsight uses `all_strict` matching to find existing observations to update — only observations whose tags exactly match the current scope are considered. This keeps scopes isolated: a memory consolidated under `["student:alice"]` will never bleed into an observation tagged `["student:alice", "teacher:bob"]`.
 The examples below use a lesson transcript retained with `tags: ["student:alice", "teacher:bob", "session-id:s1"]`.
 
@@ -243,6 +307,19 @@ One consolidation pass using all tags together. The resulting observation is tag
 
 **Use when** the memory is meaningful only as a whole and you never need to query any single tag in isolation.
 
+#### shared
+
+One consolidation pass over a single global, **untagged** scope. The memory's own tags are ignored for observation scoping (they stay on the source facts for recall filtering), so memories with *different* tags all consolidate into the **same** observation.
+
+- Observations created: one untagged observation (`[]`)
+- ✓ Untagged observations match every recall regardless of tag filter
+- Deduplicates across volatile per-call tags: if each session is retained with a unique `session-id:…` tag, `combined` and `per_tag` create a fresh observation every session (the tag never repeats), whereas `shared` folds them all into one.
+
+**Use when** your tags are per-call provenance (e.g. session ids) that you want for recall filtering and debugging but not as a consolidation boundary — keep the tag on `tags` and set `observation_scopes: "shared"`. Documents already retained without it can be moved in place with a [document PATCH](../observations.md#changing-scopes).
+
+> **🚨 `shared` vs `[[]]` vs `[]`**
+>
+`shared` is equivalent to the explicit scope `[[]]` — a list containing one empty scope. Do **not** confuse it with `[]` (an empty list), which declares *zero* scopes and silently falls back to `combined`.
 #### per_tag
 
 One consolidation pass per individual tag. Each tag gets its own isolated observation that grows with every new memory sharing that tag.
@@ -281,6 +358,30 @@ Pass an explicit list of tag sets. Each inner list is one scope.
 - ✗ *"What happened in session s1 regardless of teacher?"* — `["session-id:s1"]` alone was not included
 
 **Use when** you know exactly which combinations are meaningful and want to avoid unnecessary passes.
+
+#### Tag globs in custom scopes
+
+A tag containing `*` is a glob, matched against the memory's own tags: `topic:*` stands for whatever `topic:` tags the memory carries. This lets you scope by a tag whose value you don't know when you send the request — typically one added by an [entity label](./memory-banks.md#entity-labels) with `tag: true` during extraction.
+
+With a memory tagged `["topic:billing", "user:alice", "source:agent-a", "session:7"]`:
+
+| `observation_scopes` | Observations created |
+|---|---|
+| `[["topic:*"]]` | `["topic:billing"]` |
+| `[["topic:*", "user:*"]]` | `["topic:billing", "user:alice"]` |
+| `[["topic:*"], ["user:*"]]` | `["topic:billing"]` · `["user:alice"]` |
+| `[["topic:*", "team:x"]]` | `["team:x", "topic:billing"]` |
+
+- A glob matching several tags puts all of them in the scope.
+- A scope whose globs match nothing is skipped. If every scope is skipped, the memory falls back to `combined` — it never becomes untagged.
+- Tags the scope leaves out (`source:`, `session:` above) stay on the memory for recall filtering; they just don't split observations. So memories about the same topic from different agents or sessions consolidate together — and in the same LLM call, which keeps consolidation cost proportional to the number of subjects rather than the number of memories.
+
+> **🚨 Tags left out of the scope are not on the observation**
+>
+With `[["topic:*"]]`, Alice's and Bob's billing facts build one observation tagged only `topic:billing`. A recall filtered to `user:alice` won't match it, and anyone who can see `topic:billing` reads both. Add `user:*` to the scope to keep users apart.
+#### Bank default
+
+When an item sends no `observation_scopes`, the bank's [`default_observation_scopes`](./memory-banks.md#default_observation_scopes) applies (`combined` unless set). It accepts any value above, so `[["topic:*"]]` there groups every client's memories by topic without changing any client. The default is stored on each memory at retain, so changing it later doesn't re-scope memories already retained (reprocessing a document applies the current default) — move them with a [document PATCH](../observations.md#changing-scopes).
 
 ### Response
 
@@ -336,7 +437,19 @@ hindsight memory retain my-bank "Alice and Bob are friends" \
 ### Go
 
 ```go
-# Section 'retain-batch' not found in api/retain.go
+doc1 := "conversation_001_msg_1"
+doc2 := "conversation_001_msg_2"
+doc3 := "conversation_001_msg_3"
+ctx1 := "career"
+ctx2 := "relationship"
+client.MemoryAPI.RetainMemories(ctx, "my-bank").
+	RetainRequest(hindsight.RetainRequest{
+		Items: []hindsight.MemoryItem{
+			{Content: hindsight.TextContent("Alice works at Google"), Context: *hindsight.NewNullableString(&ctx1), DocumentId: *hindsight.NewNullableString(&doc1)},
+			{Content: hindsight.TextContent("Bob is a data scientist at Meta"), Context: *hindsight.NewNullableString(&ctx1), DocumentId: *hindsight.NewNullableString(&doc2)},
+			{Content: hindsight.TextContent("Alice and Bob are friends"), Context: *hindsight.NewNullableString(&ctx2), DocumentId: *hindsight.NewNullableString(&doc3)},
+		},
+	}).Execute()
 ```
 
 ---
@@ -345,7 +458,7 @@ hindsight memory retain my-bank "Alice and Bob are friends" \
 
 Upload files directly — Hindsight converts them to text and extracts memories automatically. File processing always runs asynchronously and returns operation IDs for tracking.
 
-**Supported formats:** PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, images (JPG, PNG, GIF, etc. — OCR), audio (MP3, WAV, FLAC, etc. — transcription), HTML, and plain text formats (TXT, MD, CSV, JSON, YAML, etc.)
+**Supported formats:** PDF, DOCX, DOC, PPTX, PPT, XLSX, XLS, images (JPG, PNG, GIF, etc. — OCR support depends on the configured parser), audio (MP3, WAV, FLAC, etc. — transcription), HTML, and plain text formats (TXT, MD, CSV, JSON, YAML, etc.)
 
 ### Python
 
@@ -394,7 +507,19 @@ hindsight memory retain-files my-bank "$SCRIPT_DIR/" --async
 ### Go
 
 ```go
-# Section 'retain-files' not found in api/retain.go
+// Open a file and upload it — Hindsight converts it to text and extracts memories.
+// Supports: PDF, DOCX, PPTX, XLSX, images (OCR), audio (transcription), and text formats.
+f, err := os.Open("../../hindsight-docs/examples/api/sample.pdf")
+if err != nil {
+	log.Fatalf("Failed to open file: %v", err)
+}
+defer f.Close()
+
+fileResp, _, _ := client.FilesAPI.FileRetain(ctx, "my-bank").
+	Files([]*os.File{f}).
+	Request(`{"files_metadata": [{"context": "quarterly report"}]}`).
+	Execute()
+fmt.Println("Operation IDs:", fileResp.GetOperationIds()) // Track processing via the operations endpoint
 ```
 
 The file retain endpoint always returns asynchronously. The response contains `operation_ids` — one per uploaded file — which you can poll via `GET /v1/default/banks/{bank_id}/operations` to track progress.
@@ -452,11 +577,24 @@ hindsight memory retain-files my-bank "$SCRIPT_DIR/" --async
 ### Go
 
 ```go
-# Section 'retain-files' not found in api/retain.go
+// Open a file and upload it — Hindsight converts it to text and extracts memories.
+// Supports: PDF, DOCX, PPTX, XLSX, images (OCR), audio (transcription), and text formats.
+f, err := os.Open("../../hindsight-docs/examples/api/sample.pdf")
+if err != nil {
+	log.Fatalf("Failed to open file: %v", err)
+}
+defer f.Close()
+
+fileResp, _, _ := client.FilesAPI.FileRetain(ctx, "my-bank").
+	Files([]*os.File{f}).
+	Request(`{"files_metadata": [{"context": "quarterly report"}]}`).
+	Execute()
+fmt.Println("Operation IDs:", fileResp.GetOperationIds()) // Track processing via the operations endpoint
 ```
 
-:::info File Storage
-Uploaded files are stored server-side (PostgreSQL by default, or S3/GCS/Azure for production). Configure storage via `HINDSIGHT_API_FILE_STORAGE_TYPE`. See [Configuration](../configuration#file-processing) for details.
+> **ℹ️ File Storage**
+>
+Uploaded files are stored server-side (PostgreSQL by default, or S3/GCS/Azure for production). Configure storage via `HINDSIGHT_API_FILE_STORAGE_TYPE`. See [Configuration](../configuration.md#file-processing) for details.
 ---
 
 ## Async Ingestion
@@ -501,14 +639,47 @@ hindsight memory retain my-bank "Meeting notes" --async
 ### Go
 
 ```go
-# Section 'retain-async' not found in api/retain.go
+// Start async ingestion (returns immediately)
+asyncTrue := true
+largeDoc1 := "large-doc-1"
+largeDoc2 := "large-doc-2"
+retainResp, _, _ := client.MemoryAPI.RetainMemories(ctx, "my-bank").
+	RetainRequest(hindsight.RetainRequest{
+		Items: []hindsight.MemoryItem{
+			{Content: hindsight.TextContent("Large batch item 1"), DocumentId: *hindsight.NewNullableString(&largeDoc1)},
+			{Content: hindsight.TextContent("Large batch item 2"), DocumentId: *hindsight.NewNullableString(&largeDoc2)},
+		},
+		Async: &asyncTrue,
+	}).Execute()
+
+// Check if it was processed asynchronously
+fmt.Println("Async:", retainResp.GetAsync())
 ```
 
 When `async: true`, the call returns immediately with an `operation_id`. Processing runs in the background via the worker service. No `usage` metrics are returned for async operations.
 
+### Safe Retries with `operation_id`
+
+If an async retain response is lost or times out, you can't tell whether the operation was created. Retrying blindly risks enqueuing the same work twice — duplicate extraction, embeddings, and provider spend.
+
+Supply your own `operation_id` (any UUID) to make retries safe:
+
+```json
+{
+  "items": [{ "content": "Alice works at Google", "document_id": "conv_123" }],
+  "async": true,
+  "operation_id": "3f2b8c1a-9d4e-4a7b-9c2f-1e6d5a4b3c2d"
+}
+```
+
+- Re-submitting with the same `operation_id` returns the original operation and creates no new work, so a retry after a lost acknowledgement is a no-op.
+- Reusing an `operation_id` that already belongs to a different operation returns HTTP `409`.
+- Omitting `operation_id` keeps the default behavior — each request creates a new operation.
+- Generate the id **before** you send the request and reuse it across retries. `operation_id` is ignored for synchronous retain, and requires all items in the request to resolve to a single strategy.
+
 ### Cut Costs 50% with Provider Batch APIs
 
-When using async retain, enable the provider Batch API to reduce LLM fact-extraction costs by 50%. OpenAI and Groq both offer this discount in exchange for a processing window of up to 24 hours — a trade-off that's typically invisible when retain already runs in the background.
+When using async retain, enable the provider Batch API to reduce LLM fact-extraction costs by 50%. OpenAI, Groq, and Gemini all offer this discount in exchange for a processing window of up to 24 hours — a trade-off that's typically invisible when retain already runs in the background.
 
 ```bash
 export HINDSIGHT_API_RETAIN_BATCH_ENABLED=true
@@ -516,5 +687,6 @@ export HINDSIGHT_API_RETAIN_BATCH_ENABLED=true
 
 Hindsight submits fact extraction calls as a batch job to the provider, polls for completion, and processes results automatically. No changes to your API calls are needed.
 
-:::note
-Batch API cost savings require `async=true` in your retain request and a compatible provider (OpenAI or Groq).
+> **📝 Note**
+>
+Batch API cost savings require `async=true` in your retain request and a compatible provider (OpenAI, Groq, or Gemini).

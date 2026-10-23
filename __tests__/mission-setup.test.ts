@@ -49,17 +49,23 @@ const BASE_CONFIG = {
 
 let tempDir = "";
 let originalHome: string | undefined;
+let originalUserProfile: string | undefined;
 
 function setupTempHome() {
   tempDir = mkdtempSync(join(tmpdir(), "hindsight-test-"));
   mkdirSync(join(tempDir, ".hindsight"), { recursive: true });
   originalHome = process.env.HOME;
+  originalUserProfile = process.env.USERPROFILE;
   process.env.HOME = tempDir;
+  // os.homedir() uses USERPROFILE on Windows and HOME elsewhere.
+  process.env.USERPROFILE = tempDir;
 }
 
 function teardownTempHome() {
   if (originalHome !== undefined) process.env.HOME = originalHome;
   else delete process.env.HOME;
+  if (originalUserProfile !== undefined) process.env.USERPROFILE = originalUserProfile;
+  else delete process.env.USERPROFILE;
   rmSync(tempDir, { recursive: true, force: true });
 }
 

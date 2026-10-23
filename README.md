@@ -16,6 +16,8 @@ This extension connects to a **self-hosted Hindsight server**. It does not inclu
 
 You need a running [Hindsight](https://github.com/vectorize-io/hindsight) server.
 
+This release targets Hindsight **1.1.x** (HTTP API `1.1.0`). It uses the bank config API for missions and reflection settings; the legacy bank profile endpoints are no longer used.
+
 If you don't have a Hindsight server yet, follow the [Hindsight getting started guide](https://hindsight.vectorize.io/developer/api/quickstart) first, then come back here.
 
 ## Install
@@ -228,7 +230,7 @@ This section aims to help you pick the right one. Both are good.
 | Backend required | Self-hosted Hindsight server + Postgres (pgvector) + embedding API | Same |
 | Extra dependencies | None (raw `fetch`) | `@vectorize-io/hindsight-client` SDK |
 | Config format | `.ini` | JSON |
-| Codebase | Single file (~450 LOC) | Multi-file modular (~1500 LOC) |
+| Codebase | Single file (~1,300 LOC) | Multi-file modular (~1500 LOC) |
 
 ### Recall
 
@@ -293,7 +295,7 @@ This section aims to help you pick the right one. Both are good.
 | Setup experience  | Manual: edit config file, run `/hindsight status`           | Interactive: `/hindsight:setup` wizard                                                |
 | Diagnostics       | `/hindsight status` (health + hooks + log tail)             | `/hindsight:doctor` (preflight), `/hindsight:status` (runtime)                        |
 | Manual tools      | `hindsight_recall`, `hindsight_retain`, `hindsight_reflect` | `hindsight_search`, `hindsight_context`, `hindsight_retain`, `hindsight_bank_profile` |
-| Commands          | 3 (`status`, `stats`, `settings`)                             | 10+ (setup, settings, doctor, where, sync, map, mode, config, connect, stats)         |
+| Commands          | 4 (`status`, `stats`, `settings`, `doctor`)                  | 10+ (setup, settings, doctor, where, sync, map, mode, config, connect, stats)         |
 | Performance docs  | Benchmarks, latency analysis, Supabase index guide          | Not included                                                                          |
 
 **What the differences mean:**

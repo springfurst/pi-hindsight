@@ -206,35 +206,58 @@ function getLastUserMessage(ctx, fallbackPrompt) {
     catch (e) { }
     return fallbackPrompt;
 }
-async function getBankMission(config, bank) {
+/**
+ * Read a bank's resolved configuration.
+ *
+ * Hindsight 1.x removed the bank profile endpoints. Disposition traits and the
+ * reflect mission are bank configuration now (reflect_mission,
+ * disposition_skepticism, disposition_literalism, disposition_empathy), while a
+ * bank's display name comes from GET /v1/default/banks.
+ */
+async function fetchBankConfig(config, bank) {
     try {
-        const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/profile`, {
-            headers: { "Authorization": `Bearer ${config.api_key || ""}` }
-        });
-        if (!res.ok)
-            return null;
-        const data = await res.json();
-        return data.mission || null;
-    }
-    catch (_) {
-        return null;
-    }
-}
-async function checkBankConfig(config, bank) {
-    try {
-        const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/profile`, {
-            headers: { "Authorization": `Bearer ${config.api_key || ""}` }
-        });
-        if (res.status === 401 || res.status === 403)
-            return { ok: false, authError: true };
-        if (!res.ok)
-            return { ok: false, authError: false };
-        const data = await res.json();
-        return { ok: true, mission: data.mission || null };
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        try {
+            const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/config`, {
+                headers: { "Authorization": `Bearer ${config.api_key || ""}` },
+                signal: controller.signal
+            });
+            if (res.status === 401 || res.status === 403) {
+                return { ok: false, status: res.status, authError: true };
+            }
+            if (!res.ok)
+                return { ok: false, status: res.status, authError: false };
+            const data = await res.json();
+            return {
+                ok: true,
+                data: {
+                    config: data.config || {},
+                    overrides: data.overrides || {},
+                },
+            };
+        }
+        finally {
+            clearTimeout(timeout);
+        }
     }
     catch (_) {
         return { ok: false, authError: false };
     }
+}
+async function getBankMission(config, bank) {
+    const result = await fetchBankConfig(config, bank);
+    if (!result.ok)
+        return null;
+    const mission = result.data.config.reflect_mission ?? result.data.overrides.reflect_mission;
+    return typeof mission === "string" && mission.trim() ? mission : null;
+}
+async function checkBankConfig(config, bank) {
+    const result = await fetchBankConfig(config, bank);
+    if (!result.ok)
+        return { ok: false, authError: result.authError };
+    const mission = result.data.config.reflect_mission ?? result.data.overrides.reflect_mission;
+    return { ok: true, mission: typeof mission === "string" && mission.trim() ? mission : null };
 }
 async function getServerHealth(config) {
     try {
@@ -283,16 +306,16 @@ const OPERATIONAL_TOOLS = [
     "bash", "nu", "process", "read", "write", "edit",
     "grep", "ast_grep_search", "ast_grep_replace", "lsp_navigation"
 ];
-const GLOBAL_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
-const PROJECT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
-const GLOBAL_RETAIN_MISSION = "Focus on user preferences, communication style, workflow habits, and recurring patterns across projects. Deprioritize one-time events and project-specific implementation details.";
-const GLOBAL_OBSERVATIONS_MISSION = "Observations are durable user preferences, coding conventions, tooling decisions, and workflow patterns. Focus on what the user consistently does or prefers — not one-time events or actions. Merge repeated patterns into single observations. Highlight when behavior contradicts previous observations.";
-const PROJECT_RETAIN_MISSION = "Focus on coding conventions, architecture decisions, tech stack choices, project-specific patterns, and user preferences within this codebase. Deprioritize one-time events and transient debugging steps.";
-const PROJECT_OBSERVATIONS_MISSION = "Observations are durable user preferences, coding conventions, tooling decisions, and workflow patterns. Also capture key project context: architecture decisions, tech stack choices, known constraints, and established patterns in the codebase. Focus on what persists across sessions — not one-time events or actions. Merge repeated patterns into single observations. Highlight when behavior contradicts previous observations.";
-function getMissionCachePath() {
+export const GLOBAL_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+export const PROJECT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
+export const GLOBAL_RETAIN_MISSION = "Focus on user preferences, communication style, workflow habits, and recurring patterns across projects. Deprioritize one-time events and project-specific implementation details.";
+export const GLOBAL_OBSERVATIONS_MISSION = "Observations are durable user preferences, coding conventions, tooling decisions, and workflow patterns. Focus on what the user consistently does or prefers — not one-time events or actions. Merge repeated patterns into single observations. Highlight when behavior contradicts previous observations.";
+export const PROJECT_RETAIN_MISSION = "Focus on coding conventions, architecture decisions, tech stack choices, project-specific patterns, and user preferences within this codebase. Deprioritize one-time events and transient debugging steps.";
+export const PROJECT_OBSERVATIONS_MISSION = "Observations are durable user preferences, coding conventions, tooling decisions, and workflow patterns. Also capture key project context: architecture decisions, tech stack choices, known constraints, and established patterns in the codebase. Focus on what persists across sessions — not one-time events or actions. Merge repeated patterns into single observations. Highlight when behavior contradicts previous observations.";
+export function getMissionCachePath() {
     return join(homedir(), ".hindsight", "mission-cache.json");
 }
-function loadMissionCache() {
+export function loadMissionCache() {
     try {
         const path = getMissionCachePath();
         if (!existsSync(path)) {
@@ -305,7 +328,7 @@ function loadMissionCache() {
         return { global: {}, project: {} };
     }
 }
-function saveMissionCache(cache) {
+export function saveMissionCache(cache) {
     try {
         const path = getMissionCachePath();
         mkdirSync(join(homedir(), ".hindsight"), { recursive: true });
@@ -313,13 +336,13 @@ function saveMissionCache(cache) {
     }
     catch (_) { }
 }
-function isCacheStale(timestamp, isGlobal) {
+export function isCacheStale(timestamp, isGlobal) {
     if (!timestamp)
         return true;
     const ttl = isGlobal ? GLOBAL_TTL_SECONDS : PROJECT_TTL_SECONDS;
     return Date.now() / 1000 - timestamp > ttl;
 }
-async function setupBankMission(config, bank, isGlobal) {
+export async function setupBankMission(config, bank, isGlobal) {
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 10000);
@@ -367,7 +390,7 @@ async function setupBankMission(config, bank, isGlobal) {
     }
     catch (_) { }
 }
-async function runMissionAutoSetup(config) {
+export async function runMissionAutoSetup(config) {
     const cache = loadMissionCache();
     const banksToCheck = [];
     if (config.global_bank) {
@@ -389,6 +412,35 @@ async function runMissionAutoSetup(config) {
 // Extension
 // ---------------------------------------------------------------------------
 const MAX_RECALL_ATTEMPTS = 3;
+const RATE_LIMIT_RETRIES = 3;
+const RATE_LIMIT_BACKOFF_MS = [10000, 20000, 40000];
+function isRateLimitError(status, body) {
+    return status === 429 || body.includes("429") || body.includes("TooManyRequestsError");
+}
+async function fetchWithRateLimitRetry(url, options, label) {
+    for (let attempt = 0; attempt <= RATE_LIMIT_RETRIES; attempt++) {
+        const res = await fetch(url, options);
+        if (res.ok)
+            return { res, rateLimitExhausted: false };
+        const errorBody = await res.text();
+        if (!isRateLimitError(res.status, errorBody)) {
+            // Non-rate-limit error — return immediately, caller handles it
+            log(`${label}: HTTP ${res.status} - ${errorBody.slice(0, 200)}`);
+            return { res, rateLimitExhausted: false };
+        }
+        if (attempt < RATE_LIMIT_RETRIES) {
+            const delay = RATE_LIMIT_BACKOFF_MS[attempt];
+            log(`${label}: rate-limited (429), retrying in ${delay}ms (attempt ${attempt + 1}/${RATE_LIMIT_RETRIES})`);
+            await new Promise((r) => setTimeout(r, delay));
+        }
+        else {
+            log(`${label}: rate-limited (429), exhausted ${RATE_LIMIT_RETRIES} retries`);
+            return { res, rateLimitExhausted: true };
+        }
+    }
+    // unreachable, but satisfy TS
+    throw new Error("unreachable");
+}
 export default function hindsightExtension(pi) {
     let recallDone = false;
     let recallAttempts = 0;
@@ -501,7 +553,7 @@ export default function hindsightExtension(pi) {
                     const controller = new AbortController();
                     const timeout = setTimeout(() => controller.abort(), config.recall_timeout ?? 10000);
                     try {
-                        const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/memories/recall`, {
+                        const { res, rateLimitExhausted } = await fetchWithRateLimitRetry(`${config.api_url}/v1/default/banks/${bank}/memories/recall`, {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
@@ -509,7 +561,9 @@ export default function hindsightExtension(pi) {
                             },
                             body: JSON.stringify(reqBody),
                             signal: controller.signal
-                        });
+                        }, `hindsight_recall: bank=${bank}`);
+                        if (rateLimitExhausted)
+                            return { __rateLimited: true };
                         if (!res.ok)
                             return [];
                         const data = await res.json();
@@ -524,6 +578,9 @@ export default function hindsightExtension(pi) {
                     }
                 });
                 const resultsArrays = await Promise.all(recallPromises);
+                if (resultsArrays.some((r) => r?.__rateLimited)) {
+                    return { content: [{ type: "text", text: "Recall rate-limited — reranker quota exceeded (Cohere Trial key: 10 calls/min). Upgrade at https://dashboard.cohere.com/api-keys or switch reranker provider on the Hindsight server." }], details: {}, isError: true };
+                }
                 const allResults = resultsArrays.flat();
                 if (allResults.length > 0) {
                     return { content: [{ type: "text", text: allResults.join("\n\n") }], details: {} };
@@ -587,7 +644,7 @@ export default function hindsightExtension(pi) {
             try {
                 const controller = new AbortController();
                 const timeout = setTimeout(() => controller.abort(), config.recall_timeout ?? 10000);
-                const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/memories/reflect`, {
+                const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/reflect`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -599,7 +656,12 @@ export default function hindsightExtension(pi) {
                 clearTimeout(timeout);
                 if (res.ok) {
                     const data = await res.json();
-                    return { content: [{ type: "text", text: data.synthesis || JSON.stringify(data) }], details: {} };
+                    const text = typeof data.text === "string"
+                        ? data.text
+                        : typeof data.synthesis === "string"
+                            ? data.synthesis
+                            : JSON.stringify(data);
+                    return { content: [{ type: "text", text }], details: {} };
                 }
                 return { content: [{ type: "text", text: "Failed to reflect." }], details: {}, isError: true };
             }
@@ -638,6 +700,7 @@ export default function hindsightExtension(pi) {
         try {
             let anyBankSucceeded = false;
             let authFailed = false;
+            let rateLimitedFailed = false;
             const recallPromises = banks.map(async (bank) => {
                 const reqBody = { query: lastUserPrompt, budget: config.recall_budget, query_timestamp: new Date().toISOString(), types: config.recall_types };
                 if (config.recall_max_tokens !== undefined)
@@ -648,7 +711,7 @@ export default function hindsightExtension(pi) {
                     log(`before_agent_start: bank=${bank} timed out`);
                 }, config.recall_timeout ?? 10000);
                 try {
-                    const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/memories/recall`, {
+                    const { res, rateLimitExhausted } = await fetchWithRateLimitRetry(`${config.api_url}/v1/default/banks/${bank}/memories/recall`, {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
@@ -656,9 +719,12 @@ export default function hindsightExtension(pi) {
                         },
                         body: JSON.stringify(reqBody),
                         signal: controller.signal
-                    });
+                    }, `before_agent_start: bank=${bank}`);
+                    if (rateLimitExhausted) {
+                        rateLimitedFailed = true;
+                        return [];
+                    }
                     if (!res.ok) {
-                        log(`before_agent_start: bank=${bank} HTTP ${res.status}`);
                         if (res.status === 401 || res.status === 403)
                             authFailed = true;
                         return [];
@@ -683,6 +749,13 @@ export default function hindsightExtension(pi) {
                 recallAttempts = MAX_RECALL_ATTEMPTS; // auth won't fix itself mid-session
                 ctx.ui.setStatus("hindsight", "✗ auth error - check api_key");
                 log("before_agent_start: auth error, giving up");
+                return;
+            }
+            if (rateLimitedFailed) {
+                hookStats.recall = { firedAt: new Date().toISOString(), result: "failed", detail: "rate limited" };
+                recallAttempts = MAX_RECALL_ATTEMPTS;
+                ctx.ui.setStatus("hindsight", "✗ rate-limited (reranker quota exceeded)");
+                log("before_agent_start: rate-limited, giving up");
                 return;
             }
             if (anyBankSucceeded) {
@@ -879,7 +952,7 @@ export default function hindsightExtension(pi) {
                                 timestamp: new Date().toISOString(),
                                 ...(extractedTags.length > 0 && { tags: extractedTags })
                             }],
-                        async: true
+                        async: false
                     })
                 });
                 log(`agent_end: bank=${bank} retain HTTP ${res.status}`);

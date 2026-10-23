@@ -2,25 +2,22 @@
 sidebar_position: 3
 ---
 
+
 # Recall: How Hindsight Retrieves Memories
 
 When you call `recall()`, Hindsight uses multiple search strategies in parallel to find the most relevant memories, regardless of how you phrase your query.
 
-```mermaid
-graph LR
-    Q[Query] --> S[Semantic]
-    Q --> K[Keyword]
-    Q --> G[Graph]
-    Q --> T[Temporal]
+**Figure: Multi-Strategy Retrieval (TEMPR).** An animated diagram on the docs site; its narration, step by step:
 
-    S --> RRF[RRF Fusion]
-    K --> RRF
-    G --> RRF
-    T --> RRF
-
-    RRF --> CE[Cross-Encoder]
-    CE --> R[Results]
-```
+- **recall()**
+  1. recall() gets a query. Nothing is decided yet about which kind of search fits it best, so every arm that applies runs.
+  2. Each arm searches its own index: meaning (vectors), exact words (BM25), the entity graph, and time. “March 2026” becomes a date range; a query with no date skips the time arm.
+  3. All four point into the same memories. Each arm returns its own ranked list, and facts and observations compete in every one. The mark shows how many arms found each.
+  4. RRF fusion merges the lists by rank, not raw score: a memory found near the top by several arms beats one found by a single arm.
+  5. The top candidates (up to 300) go to a cross-encoder, which reads the query and each memory together and scores how well they match.
+  6. Small multiplicative boosts nudge the score: recent memories, memories inside the asked time range, and observations backed by more evidence.
+  7. Results are packed best-first until max_tokens is used up. Only the memory text counts toward the budget.
+  8. The agent gets a short, ranked list it can put straight into its prompt.
 
 ---
 
@@ -33,7 +30,7 @@ Different queries need different search approaches:
 - **"What did Alice do last spring?"** → needs temporal reasoning
 - **"Why did Alice leave?"** → needs causal relationship tracing
 
-No single search method handles all these well. Hindsight solves this with **TEMPR** — four complementary strategies that run in parallel.
+No single search method handles all these well. Hindsight runs **four complementary strategies in parallel** and fuses their results.
 
 ---
 
@@ -63,6 +60,20 @@ No single search method handles all these well. Hindsight solves this with **TEM
 
 **Why it matters:** Ensures you never miss results that mention specific names or terms, even if they're semantically distant from your query.
 
+**Backends:** Hindsight ships five pluggable BM25 backends, selected via
+`HINDSIGHT_API_TEXT_SEARCH_EXTENSION`:
+
+| Backend | What it uses | Citus-compatible? |
+|---|---|---|
+| `native` | PostgreSQL `tsvector` + `ts_rank_cd` (TF-IDF, not true BM25) | Yes |
+| `vchord` | `vchord_bm25` extension | No |
+| `pg_textsearch` | Timescale `pg_textsearch` extension | No |
+| `pgroonga` | PGroonga (Groonga) full-text extension, `TokenBigram` polyglot tokenizer | No |
+| `pg_search` | ParadeDB `pg_search` extension, configurable tokenizer (e.g. `jieba`, `chinese_compatible`, `ngram`) via `HINDSIGHT_API_TEXT_SEARCH_EXTENSION_PG_SEARCH_TOKENIZER` | Yes |
+
+If you need true BM25 ranking on a horizontally scaled Postgres (Citus) cluster,
+`pg_search` is the only option. See the [`pg_search` docker-compose example](https://github.com/vectorize-io/hindsight/tree/main/docker/docker-compose/pg_search).
+
 ---
 
 ### Graph Traversal
@@ -90,9 +101,9 @@ No single search method handles all these well. Hindsight solves this with **TEM
 - Relative time: "What did Bob work on last year?"
 - Before/after: "What happened before Alice joined Google?"
 
-**How it works:** Combines semantic understanding with time filtering to find events within specific periods.
+**How it works:** When the query contains a time reference, Hindsight parses it into a date window, then retrieves the memories whose time overlaps that window. Within the window it selects candidates by **semantic relevance to the query** — not by recency — so the most relevant in-window memory is never dropped just because other memories happen to be more recent. It then **spreads the selection across the window's range**: the window is divided into time-buckets and the strongest match from each populated bucket is taken first, so a "what happened in 2023?" query surfaces memories from across the whole year rather than clustering on whichever stretch is densest. Time is also used as a *scoring* signal — memories closer to the center of the window get a small boost (see [Temporal proximity signal](#temporal-proximity-signal)).
 
-**Why it matters:** Enables precise historical queries without losing old information.
+**Why it matters:** Enables precise historical queries that stay relevant *and* representative of the whole period. It also stays fast and meaningful on memory banks whose timestamps are densely clustered (for example when a large batch is ingested with one date): because selection is relevance-first, a time window that happens to match most of the bank still returns the best matches rather than an arbitrary slice.
 
 ---
 
@@ -135,7 +146,7 @@ Hindsight is built for AI agents, not humans. Traditional search systems return 
 - `budget`: Search depth level (low, mid, high)
 - `types`: Filter by world, experience, observation, or all
 - `tags`: Filter memories by visibility tags
-- `tags_match`: How to match tags (see [Recall API](./api/recall) for all options)
+- `tags_match`: How to match tags (see [Recall API](./api/recall.md) for all options)
 
 ### Expanding Context: Chunks
 
@@ -211,16 +222,209 @@ Budget and max_tokens control different aspects of recall:
 
 ---
 
-## Graph Retrieval Algorithms
+## Scoring & Ranking Deep Dive
 
-Hindsight supports multiple graph traversal algorithms. The default (`link_expansion`) is optimized for fast retrieval with target latency under 100ms.
+This section explains exactly how Hindsight turns raw retrieval results into a final ranked list. The pipeline has three stages: **RRF fusion**, **cross-encoder reranking**, and **combined scoring**.
 
-See [Configuration → Retrieval](./configuration#retrieval) for available algorithms and how to configure them.
+### Stage 1: Reciprocal Rank Fusion (RRF)
+
+After all strategies run in parallel, their results are merged using [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf). RRF combines ranked lists by rewarding items that appear highly ranked across multiple strategies, without relying on raw scores (which aren't comparable across different retrieval methods).
+
+**Formula:**
+
+```
+score(d) = Σ  1 / (k + rank_i(d))
+           i
+```
+
+Where:
+- **k = 60** (smoothing constant — prevents top-ranked items from dominating)
+- **rank_i(d)** = position of document *d* in strategy *i* (1-indexed)
+- The sum runs over all strategies where *d* appears
+
+**Within RRF, all four strategies are weighted equally** — fusion uses rank position, not the source, so no strategy gets an implicit multiplier. You can, however, deliberately bias a source with [`HINDSIGHT_API_RECALL_STRATEGY_BOOSTS`](./configuration.md): that boost is applied at a separate stage — before the reranking pre-filter cap, and again after a cross-encoder rerank — not inside the RRF fusion above. The pre-cap step runs only when the merged pool exceeds the cap, and it does not rewrite RRF scores. A passthrough reranker (mode `rrf`, an `rrf` provider, or a failover chain that has degraded to `rrf`) skips the post-rerank nudge: within the cap the setting then does nothing, and above the cap it only changes who is kept.
+
+**Why RRF over raw score merging?** Each retrieval strategy produces scores on a different scale (cosine similarity, BM25 tf-idf, graph activation). These scores aren't comparable — a BM25 score of 12.5 and a cosine similarity of 0.85 don't mean the same thing. RRF sidesteps this by using only rank positions, making it robust across any scoring system without requiring calibration.
+
+**Example:** A memory ranked #1 in semantic and #5 in BM25:
+```
+RRF score = 1/(60+1) + 1/(60+5) = 0.0164 + 0.0154 = 0.0318
+```
+
+A memory ranked #1 in semantic only:
+```
+RRF score = 1/(60+1) = 0.0164
+```
+
+The first memory ranks higher because it has **consensus** across strategies.
+
+---
+
+### Stage 2: Cross-Encoder Reranking
+
+RRF gives a good initial ranking, but it's based on positions, not on deep query-document understanding. The cross-encoder evaluates each candidate against the query as a pair, producing a relevance score.
+
+**Pre-filtering:** Before reranking, candidates are trimmed to the top **300** (by RRF score) to limit computational cost. This is configurable via `HINDSIGHT_API_RERANKER_MAX_CANDIDATES`. If [`HINDSIGHT_API_RECALL_STRATEGY_BOOSTS`](./configuration.md) is set, the boost is applied before this cut, so candidates from a favoured source are more likely to survive it. The boost promotes the favoured arm in *rank* space (its rank is divided by the level's divisor before the RRF contribution is computed) rather than scaling its score, so it reaches deeper into that arm without evicting the top-ranked hits of the others — including on banks whose merged pool is many times the cap. When `trace: true` is requested, the `rerank_prefilter` phase reports how many candidates were kept and dropped, the cap in force, the active boosts, and the per-arm composition of the survivors.
+
+**Why rerank after RRF?** RRF is position-based — it knows a memory ranked well across strategies, but it never actually reads the query and the memory together. The cross-encoder does: it takes the query and each candidate as a pair and produces a relevance score based on their full interaction. This catches nuances that position-based fusion misses, like a memory that ranked #1 in keyword search because it matched a common term but is actually irrelevant to the query's intent.
+
+**Score normalization:** Cross-encoders output raw logits (which can be negative). Scores that already fall within [0, 1] — as returned by calibrated external API rerankers (e.g. Cohere, SiliconFlow, ZeroEntropy, Alibaba, Jina) — are passed through unchanged to preserve their absolute confidence. Raw logits outside [0, 1] are normalized to [0, 1] using the sigmoid function:
+
+```
+CE_normalized = 1 / (1 + e^(-raw_logit))
+```
+
+**Batch processing:** Candidates are scored in batches — **32 pairs** for the local reranker, **128 pairs** for TEI.
+
+:::tip No cross-encoder?
+When running without a cross-encoder (e.g., slim image with no external reranker), the system falls back to RRF-derived scores: candidates are assigned synthetic scores spread across [0.1, 1.0] based on their RRF rank, so the combined scoring boosts below still work meaningfully. `HINDSIGHT_API_RECALL_STRATEGY_BOOSTS` does not add its post-rerank nudge on this path. If the merged pool is within the reranker cap, the setting changes nothing; if the pool is larger, it only changes which candidates are kept, and their order still follows these RRF-derived scores plus recency, temporal and proof.
+:::
+
+---
+
+### Stage 3: Combined Scoring (Boosts)
+
+The normalized cross-encoder score is adjusted by three **multiplicative boosts** that incorporate signals the cross-encoder can't see: recency, temporal proximity, and evidence strength.
+
+**Why multiplicative instead of additive?** Additive boosts (e.g., `CE + 0.1 × recency`) would give the same absolute bonus to every candidate regardless of relevance. A barely-relevant memory could leapfrog a highly-relevant one just by being recent. Multiplicative boosts keep adjustments proportional to the base relevance score — a +10% nudge on a high-relevance memory is a bigger absolute change than +10% on a low-relevance one. This ensures secondary signals never overpower the primary relevance judgment.
+
+**Formula:**
+
+```
+final_score = CE_normalized × recency_boost × temporal_boost × proof_count_boost
+```
+
+Each boost is centered at 1.0 (neutral) and controlled by an alpha that caps how much it can swing:
+
+```
+boost = 1 + α × (signal - 0.5)
+```
+
+| Boost | α | Max adjustment | What it rewards |
+|-------|---|----------------|-----------------|
+| **Recency** | 0.2 | ±10% | Recent memories over older ones |
+| **Temporal proximity** | 0.2 | ±10% | Memories close to a queried time window |
+| **Proof count** | 0.1 | ±5% | Observations backed by more evidence |
+
+#### Recency signal
+
+Linear decay over 365 days from the memory's occurrence date:
+
+```
+recency = clamp(1.0 - days_ago / 365, 0.1, 1.0)
+```
+
+A memory from the query timestamp has recency 1.0 (+10% boost). A memory from 6 months before the query timestamp has recency ~0.5 (neutral). A memory more than a year before the query timestamp has recency 0.1 (-8% penalty). If no `query_timestamp` is provided, the server's current time is used. Memories without dates get 0.5 (neutral — no boost or penalty).
+
+#### Temporal proximity signal
+
+Only active when the query contains a time reference (e.g., "last spring", "in 2023"). Measures how close a memory's date is to the center of the queried time window:
+
+```
+temporal_proximity = 1.0 - min(days_from_center / (window_days / 2), 1.0)
+```
+
+A memory at the center of the window gets 1.0 (+10% boost). A memory at the edge gets 0.0 (-10% penalty). For non-temporal queries, all memories get 0.5 (neutral).
+
+#### Proof count signal
+
+For observation-type memories, rewards those backed by more evidence using a logarithmic curve:
+
+```
+proof_norm = clamp(0.5 + ln(proof_count) / 10, 0.0, 1.0)
+```
+
+| Proof count | proof_norm | Boost |
+|-------------|-----------|-------|
+| 1 | 0.5 | Neutral |
+| 3 | 0.61 | +1.1% |
+| 10 | 0.73 | +2.3% |
+| 150+ | 1.0 | +5% (max) |
+
+#### Maximum combined range
+
+With all boosts at their extremes:
+- **Best case:** ×1.10 × 1.10 × 1.05 ≈ **+27%**
+- **Worst case:** ×0.90 × 0.90 × 0.95 ≈ **-23%**
+
+The boosts are intentionally conservative — they nudge the ranking without overriding cross-encoder relevance.
+
+---
+
+### Stage 4: Token Truncation
+
+After scoring, results are sorted by `final_score` and selected top-down until the `max_tokens` budget is exhausted. Only the memory text counts toward the budget — metadata is free. A result too long for what is left of the budget is skipped and the packing continues with the next one, so a single long fact does not cost you the shorter ones ranked behind it. If nothing fits at all, the top-ranked result is still returned whole, so a query that matched something is never answered with an empty list.
+
+---
+
+### How Budget Maps to Pipeline Parameters
+
+The `budget` parameter (low/mid/high) controls **search depth** — how many candidates each strategy considers. Each level maps to a **recall budget** number that flows through every pipeline stage:
+
+| Budget | Recall budget (fixed mode) | Env var override |
+|--------|---------------------------|-----------------|
+| **low** | 100 | `HINDSIGHT_API_RECALL_BUDGET_FIXED_LOW` |
+| **mid** | 300 (default) | `HINDSIGHT_API_RECALL_BUDGET_FIXED_MID` |
+| **high** | 1000 | `HINDSIGHT_API_RECALL_BUDGET_FIXED_HIGH` |
+
+This recall budget flows through the pipeline as follows:
+
+| Pipeline stage | How the recall budget is used |
+|----------------|-------------------------------|
+| **Semantic search** | `LIMIT recall_budget` in SQL, with the ANN candidate list sized to match for the query (on pgvector, `hnsw.ef_search`, capped at that setting's maximum of 1000) |
+| **BM25 search** | `LIMIT recall_budget` in SQL |
+| **Graph traversal** | Explores up to recall_budget nodes |
+| **Temporal spreading** | Activates up to recall_budget nodes via links |
+| **Result consideration** | Top recall_budget × 2 results considered for token filtering |
+
+Reranking pre-filter (300 candidates) is **independent** of budget — it's a separate knob (`HINDSIGHT_API_RERANKER_MAX_CANDIDATES`).
+
+:::info Adaptive budgeting
+An alternative budget mode scales the recall budget with `max_tokens` instead of using fixed values:
+
+```
+recall_budget = clamp(max_tokens × ratio, min, max)
+```
+
+| Budget | Ratio | Env var override |
+|--------|-------|-----------------|
+| low | 2.5% of max_tokens | `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_LOW` |
+| mid | 7.5% of max_tokens | `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_MID` |
+| high | 25% of max_tokens | `HINDSIGHT_API_RECALL_BUDGET_ADAPTIVE_HIGH` |
+
+The result is clamped to a floor of **20** (`HINDSIGHT_API_RECALL_BUDGET_MIN`) and a ceiling of **2000** (`HINDSIGHT_API_RECALL_BUDGET_MAX`).
+
+Enable with `HINDSIGHT_API_RECALL_BUDGET_FUNCTION=adaptive`.
+:::
+
+---
+
+### Graph Scoring Detail
+
+The graph traversal (link expansion) combines three independent signals additively for each candidate:
+
+| Signal | Score formula | Range |
+|--------|--------------|-------|
+| **Entity overlap** | tanh(shared_entity_count × 0.5) | [0, ~1.0] |
+| **Semantic link** | Precomputed kNN link weight | [0.7, 1.0] |
+| **Causal link** | Causal link weight | [0, 1.0] |
+
+```
+graph_score = entity_score + semantic_score + causal_score   ∈ [0, 3]
+```
+
+The additive combination rewards **convergent evidence** — a memory connected to the query through multiple signal types ranks higher than one connected through a single strong signal.
+
+**Why tanh for entity scores?** Raw shared-entity count is unbounded — a high-fanout entity like "user" could produce counts of 50+, drowning out the other two signals. `tanh(count × 0.5)` saturates naturally: the first few shared entities matter a lot (1→0.46, 2→0.76, 3→0.91), but additional ones contribute diminishing returns, keeping the entity signal in [0, 1] alongside semantic and causal scores.
+
+**Why additive instead of multiplicative here?** Unlike the combined scoring boosts, graph signals are independent evidence channels, not adjustments to a base score. A memory might be connected only through causal links (no shared entities, no semantic similarity) — multiplicative combination would zero it out. Additive scoring lets each signal contribute independently, and the outer RRF fusion handles ranking across strategies.
+
+**Entity signal example:** A memory sharing 1 entity with the query scores tanh(0.5) ≈ 0.46. Two shared entities score tanh(1.0) ≈ 0.76. Three or more saturate near 0.91+.
 
 ---
 
 ## Next Steps
 
-- [**Retain**](./retain) — How memories are stored with rich context
-- [**Reflect**](./reflect) — How disposition influences reasoning
-- [**Recall API**](./api/recall) — Code examples, parameters, and tag filtering
+- [**Retain**](./retain.md) — How memories are stored with rich context
+- [**Reflect**](./reflect.md) — How disposition influences reasoning
+- [**Recall API**](./api/recall.md) — Code examples, parameters, and tag filtering

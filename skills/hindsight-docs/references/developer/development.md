@@ -11,7 +11,7 @@ Guide to setting up a local development environment for contributing to Hindsigh
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) - Fast Python package manager
 - Docker and Docker Compose
-- An LLM API key (OpenAI, Groq, or Ollama)
+- An LLM provider credential, or a local/subscription-backed provider such as Ollama or GitHub Copilot
 
 ## Local Development Setup
 
@@ -115,10 +115,10 @@ hindsight/
 
 ## Contributing
 
-1. Create a feature branch from `main`
-2. Make your changes
-3. Run tests: `uv run pytest`
-4. Submit a pull request
+Hindsight does not accept pull requests from outside the team. To report a bug or
+ask for a feature, [open an issue](https://github.com/vectorize-io/hindsight/issues/new/choose).
+See [CONTRIBUTING.md](https://github.com/vectorize-io/hindsight/blob/main/CONTRIBUTING.md)
+for details.
 
 ## Troubleshooting
 

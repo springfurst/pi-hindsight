@@ -238,34 +238,66 @@ function getLastUserMessage(ctx: any, fallbackPrompt: string): string {
 
 
 
-async function getBankMission(config: HindsightConfig, bank: string): Promise<string | null> {
+interface BankConfigSnapshot {
+  config: Record<string, any>;
+  overrides: Record<string, any>;
+}
+
+/**
+ * Read a bank's resolved configuration.
+ *
+ * Hindsight 1.x removed the bank profile endpoints. Disposition traits and the
+ * reflect mission are bank configuration now (reflect_mission,
+ * disposition_skepticism, disposition_literalism, disposition_empathy), while a
+ * bank's display name comes from GET /v1/default/banks.
+ */
+async function fetchBankConfig(config: HindsightConfig, bank: string): Promise<
+  | { ok: true; data: BankConfigSnapshot }
+  | { ok: false; status?: number; authError: boolean }
+> {
   try {
-    const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/profile`, {
-      headers: { "Authorization": `Bearer ${config.api_key || ""}` }
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.mission || null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/config`, {
+        headers: { "Authorization": `Bearer ${config.api_key || ""}` },
+        signal: controller.signal
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, status: res.status, authError: true };
+      }
+      if (!res.ok) return { ok: false, status: res.status, authError: false };
+      const data = await res.json();
+      return {
+        ok: true,
+        data: {
+          config: data.config || {},
+          overrides: data.overrides || {},
+        },
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
   } catch (_) {
-    return null;
+    return { ok: false, authError: false };
   }
+}
+
+async function getBankMission(config: HindsightConfig, bank: string): Promise<string | null> {
+  const result = await fetchBankConfig(config, bank);
+  if (!result.ok) return null;
+  const mission = result.data.config.reflect_mission ?? result.data.overrides.reflect_mission;
+  return typeof mission === "string" && mission.trim() ? mission : null;
 }
 
 async function checkBankConfig(config: HindsightConfig, bank: string): Promise<
   | { ok: true; mission: string | null }
   | { ok: false; authError: boolean }
 > {
-  try {
-    const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/profile`, {
-      headers: { "Authorization": `Bearer ${config.api_key || ""}` }
-    });
-    if (res.status === 401 || res.status === 403) return { ok: false, authError: true };
-    if (!res.ok) return { ok: false, authError: false };
-    const data = await res.json();
-    return { ok: true, mission: data.mission || null };
-  } catch (_) {
-    return { ok: false, authError: false };
-  }
+  const result = await fetchBankConfig(config, bank);
+  if (!result.ok) return { ok: false, authError: result.authError };
+  const mission = result.data.config.reflect_mission ?? result.data.overrides.reflect_mission;
+  return { ok: true, mission: typeof mission === "string" && mission.trim() ? mission : null };
 }
 
 async function getServerHealth(config: HindsightConfig): Promise<{ ok: boolean; status?: number }> {
@@ -279,7 +311,7 @@ async function getServerHealth(config: HindsightConfig): Promise<{ ok: boolean; 
   }
 }
 
-async function getBankStats(config: HindsightConfig, bank: string): Promise<Record<string, number> | null> {
+async function getBankStats(config: HindsightConfig, bank: string): Promise<Record<string, any> | null> {
   try {
     const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/stats`, {
       headers: { "Authorization": `Bearer ${config.api_key || ""}` }
@@ -695,7 +727,7 @@ export default function hindsightExtension(pi: ExtensionAPI) {
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), config.recall_timeout ?? 10000);
-        const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/memories/reflect`, {
+        const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/reflect`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -707,7 +739,12 @@ export default function hindsightExtension(pi: ExtensionAPI) {
         clearTimeout(timeout);
         if (res.ok) {
           const data = await res.json();
-          return { content: [{ type: "text" as const, text: data.synthesis || JSON.stringify(data) }], details: {} };
+          const text = typeof data.text === "string"
+            ? data.text
+            : typeof data.synthesis === "string"
+              ? data.synthesis
+              : JSON.stringify(data);
+          return { content: [{ type: "text" as const, text }], details: {} };
         }
         return { content: [{ type: "text" as const, text: "Failed to reflect." }], details: {}, isError: true };
       } catch (e) {
@@ -1024,7 +1061,7 @@ export default function hindsightExtension(pi: ExtensionAPI) {
                 timestamp: new Date().toISOString(),
                 ...(extractedTags.length > 0 && { tags: extractedTags })
               }],
-              async: true
+              async: false
             })
           });
           log(`agent_end: bank=${bank} retain HTTP ${res.status}`);
