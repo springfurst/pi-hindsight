@@ -1,6 +1,6 @@
 {
   "name": "pi-hindsight",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Hindsight self-hosted memory extension for Pi",
   "type": "module",
   "main": "index.js",
@@ -48,15 +48,14 @@
   "author": "",
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
-  },
-  "dependencies": {
-    "@sinclair/typebox": "^0.34.52"
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.4.0",
     "@earendil-works/pi-tui": "^1.4.0",
     "@marcfargas/pi-test-harness": "^0.6.1",
+    "@sinclair/typebox": "^0.34.52",
     "@types/node": "^24.19.2",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"

@@ -12,10 +12,6 @@ patchedDependencies:
 importers:
 
   .:
-    dependencies:
-      '@sinclair/typebox':
-        specifier: ^0.34.52
-        version: 0.34.52
     devDependencies:
       '@earendil-works/pi-coding-agent':
         specifier: ^1.4.0
@@ -26,6 +22,9 @@ importers:
       '@marcfargas/pi-test-harness':
         specifier: ^0.6.1
         version: 0.6.1(patch_hash=925148b0e85ac3c58b31e26a5af662f97b8348f0fba4e5bfadbb42290f864e87)(@earendil-works/pi-agent-core@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@modelcontextprotocol/sdk@1.32.1(zod@4.6.7))(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)(zod@4.6.7))(@earendil-works/pi-ai@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@modelcontextprotocol/sdk@1.32.1(zod@4.6.7))(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)(zod@4.6.7))(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@modelcontextprotocol/sdk@1.32.1(zod@4.6.7))(@smithy/signature-v4@5.7.4)(ws@8.22.0)(zod@4.6.7))
+      '@sinclair/typebox':
+        specifier: ^0.34.52
+        version: 0.34.52
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
