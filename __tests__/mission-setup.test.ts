@@ -316,6 +316,32 @@ describe("setupBankMission — patches with correct templates", () => {
     expect(body.updates.observations_mission).toBeUndefined();
   });
 
+
+  it("patches when resolved config has missions but no bank overrides", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+      if ((opts?.method ?? "GET").toUpperCase() === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            config: { retain_mission: "resolved", observations_mission: "resolved" },
+            overrides: {},
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await setupBankMission(BASE_CONFIG, "sil", true);
+    const patchCall = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit)?.method === "PATCH",
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.updates.retain_mission).toBe(GLOBAL_RETAIN_MISSION);
+    expect(body.updates.observations_mission).toBe(GLOBAL_OBSERVATIONS_MISSION);
+  });
+
   it("PATCH goes to correct URL: /v1/default/banks/{bank}/config", async () => {
     const fetchMock = makeFetchMock({ retain_mission: null, observations_mission: null });
     vi.stubGlobal("fetch", fetchMock);
@@ -468,6 +494,14 @@ describe("runMissionAutoSetup", () => {
     await runMissionAutoSetup(BASE_CONFIG);
     const urls = fetchMock.mock.calls.map((c) => c[0] as string);
     expect(urls.some((u) => u.includes("/project-test/config"))).toBe(true);
+  });
+
+
+  it("does nothing when auto_missions is disabled", async () => {
+    const fetchMock = makeFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    await runMissionAutoSetup({ ...BASE_CONFIG, auto_missions: false });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does not throw when fetch rejects (silent failure)", async () => {

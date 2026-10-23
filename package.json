@@ -31,11 +31,11 @@
     ]
   },
   "scripts": {
-    "test": "node --experimental-strip-types test.ts && vitest run",
-    "test:node": "node --experimental-strip-types test.ts",
+    "test": "vitest run",
     "test:mission": "vitest run __tests__/mission-setup.test.ts",
     "build": "tsc index.ts",
-    "check": "pnpm build"
+    "check": "pnpm build",
+    "check:sync": "pnpm build && git diff --exit-code -- index.js"
   },
   "repository": {
     "type": "git",
@@ -51,12 +51,11 @@
     "@earendil-works/pi-tui": "*"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^1.4.0",
-    "@earendil-works/pi-tui": "^1.4.0",
-    "@modelcontextprotocol/sdk": "^1.32.1",
     "@sinclair/typebox": "^0.34.52"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0",
     "@marcfargas/pi-test-harness": "^0.6.1",
     "@types/node": "^24.19.2",
     "typescript": "^7.0.2",
