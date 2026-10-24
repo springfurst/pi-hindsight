@@ -8,7 +8,7 @@ Persistent memory for Pi, backed by a self-hosted [Hindsight](https://github.com
 - Self-hosted Hindsight users who want full data control
 - Long-lived repo work where context carries across sessions, including cross-project memory via a shared global bank
 - Users who want per-prompt memory controls (`#nomem`, `#global`, `#tags`)
-- Anyone who prefers a minimal, single-file extension with zero extra dependencies
+- Anyone who prefers a lightweight TypeScript extension with zero extra runtime dependencies
 
 ## Requirements
 
@@ -261,7 +261,7 @@ This section aims to help you pick the right one. Both are good.
 | Backend required | Self-hosted Hindsight server + Postgres (pgvector) + embedding API | Same |
 | Extra dependencies | None (raw `fetch`) | `@vectorize-io/hindsight-client` SDK |
 | Config format | `.ini` | JSON |
-| Codebase | Single file (~1,300 LOC) | Multi-file modular (~1500 LOC) |
+| Codebase | Modular TypeScript | Multi-file modular (~1500 LOC) |
 
 ### Recall
 
@@ -350,7 +350,7 @@ This extension uses raw `fetch` calls against the Hindsight REST API, no SDK dep
 
 ### When to choose this extension
 
-- You want a single-file, low-overhead setup with minimal config.
+- You want a low-overhead TypeScript setup with minimal config.
 - Per-project opt-out matters: disable memory for specific projects or your home directory via config or `/hindsight settings`.
 - Per-prompt memory controls matter: `#nomem` to skip, `#global` to route, `#tags` to annotate.
 - You prefer full transcript retention with append-mode documents over turn summaries.
