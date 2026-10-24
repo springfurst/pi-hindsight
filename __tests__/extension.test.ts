@@ -345,7 +345,7 @@ describe("retain lifecycle", () => {
     await pi.emit("session_shutdown", { reason: "quit" }, ctx);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)));
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(((call as any[])[1] as RequestInit).body)));
     for (const body of bodies) {
       const item = body.items[0];
       expect(item.document_id).toBe("session-session-1");
@@ -373,8 +373,8 @@ describe("retain lifecycle", () => {
     await pi.emit("session_shutdown", { reason: "quit" }, ctx);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toContain(`/banks/${basename(process.cwd())}/`);
-    expect(String(fetchMock.mock.calls[0][0])).not.toContain("/banks/project-");
+    expect(String((fetchMock.mock.calls[0] as any[])[0])).toContain(`/banks/${basename(process.cwd())}/`);
+    expect(String((fetchMock.mock.calls[0] as any[])[0])).not.toContain("/banks/project-");
   });
 
   it("skips auto-retain when no banks are active", async () => {

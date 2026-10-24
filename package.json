@@ -3,7 +3,6 @@
   "version": "1.5.1",
   "description": "Hindsight self-hosted memory extension for Pi",
   "type": "module",
-  "main": "index.js",
   "license": "ISC",
   "packageManager": "pnpm@10.17.0",
   "keywords": [
@@ -14,8 +13,7 @@
     "memory"
   ],
   "files": [
-    "index.js",
-    "index.ts",
+    "*.ts",
     "skills",
     "README.md"
   ],
@@ -24,7 +22,7 @@
   },
   "pi": {
     "extensions": [
-      "index.js"
+      "index.ts"
     ],
     "skills": [
       "skills"
@@ -33,9 +31,8 @@
   "scripts": {
     "test": "vitest run",
     "test:mission": "vitest run __tests__/mission-setup.test.ts",
-    "build": "tsc index.ts",
-    "check": "pnpm build",
-    "check:sync": "pnpm build && git diff --exit-code -- index.js"
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm typecheck"
   },
   "repository": {
     "type": "git",
