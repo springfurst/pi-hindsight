@@ -164,10 +164,11 @@ describe("session_start hook fires mission auto-setup", () => {
 
     await new Promise((r) => setTimeout(r, 500));
 
-    // No config GET or PATCH for global bank — cache was fresh
-    const globalConfigCalls = fetchCalls.filter(
-      (c) => c.url.includes("/banks/test-global/config"),
+    // No config PATCH for the global bank — cache was fresh. (The session-start
+    // existence check may still issue a GET.)
+    const globalConfigPatches = fetchCalls.filter(
+      (c) => c.method === "PATCH" && c.url.includes("/banks/test-global/config"),
     );
-    expect(globalConfigCalls.length).toBe(0);
+    expect(globalConfigPatches.length).toBe(0);
   });
 });

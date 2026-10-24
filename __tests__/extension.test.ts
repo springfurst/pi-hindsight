@@ -367,3 +367,87 @@ describe("reflect and status", () => {
     expect(ctx.ui.notify.mock.calls[0][1]).toBe("info");
   });
 });
+
+describe("bank creation prompt", () => {
+  beforeEach(() => setupTempHome());
+  afterEach(() => {
+    teardownTempHome();
+    vi.unstubAllGlobals();
+  });
+
+  function makeBankCtx() {
+    const ctx: any = makeCtx();
+    ctx.hasUI = true;
+    ctx.ui.confirm = vi.fn(async () => true);
+    return ctx;
+  }
+
+  it("prompts before creating a missing bank", async () => {
+    writeConfig(['global_bank = ""', 'auto_missions = "false"']);
+    const pi = makePiMock();
+    const ctx = makeBankCtx();
+    const projectBank = basename(process.cwd());
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") return jsonResponse({ bank_id: projectBank });
+      if (String(url).endsWith(`/banks/${projectBank}/config`)) {
+        return new Response("not found", { status: 404 });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    hindsightExtension(pi as any);
+
+    await pi.emit("session_start", {}, ctx);
+
+    expect(ctx.ui.confirm).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.confirm.mock.calls[0][1]).toContain(projectBank);
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT");
+    expect(putCall).toBeTruthy();
+    expect(String(putCall![0])).toBe(`http://localhost:9999/v1/default/banks/${projectBank}`);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(`Created Hindsight memory bank: ${projectBank}`, "info");
+  });
+
+  it("disables hindsight for the session when creation is declined", async () => {
+    writeConfig(['global_bank = ""', 'auto_missions = "false"']);
+    const pi = makePiMock();
+    const ctx = makeBankCtx();
+    ctx.ui.confirm = vi.fn(async () => false);
+    const projectBank = basename(process.cwd());
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") return jsonResponse({ bank_id: projectBank });
+      if (String(url).endsWith(`/banks/${projectBank}/config`)) {
+        return new Response("not found", { status: 404 });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    hindsightExtension(pi as any);
+
+    await pi.emit("session_start", {}, ctx);
+
+    expect(ctx.ui.confirm).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+      "hindsight",
+      "disabled for this session (bank not created)",
+    );
+
+    fetchMock.mockClear();
+    await pi.emit("before_agent_start", {}, ctx);
+    await pi.emit("agent_end", { messages: [{ role: "assistant", content: "Durable detail." }] }, ctx);
+    const recallResult: any = await pi.tools
+      .get("hindsight_recall")
+      .execute("call-1", { query: "anything" }, undefined, undefined, ctx);
+    const retainResult: any = await pi.tools
+      .get("hindsight_retain")
+      .execute("call-1", { content: "anything" }, undefined, undefined, ctx);
+    const reflectResult: any = await pi.tools
+      .get("hindsight_reflect")
+      .execute("call-1", { query: "anything" }, undefined, undefined, ctx);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(recallResult.isError).toBe(true);
+    expect(retainResult.isError).toBe(true);
+    expect(reflectResult.isError).toBe(true);
+  });
+});

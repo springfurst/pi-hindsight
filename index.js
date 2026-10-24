@@ -325,10 +325,10 @@ function getLastUserMessage(ctx, fallbackPrompt) {
  * disposition_skepticism, disposition_literalism, disposition_empathy), while a
  * bank's display name comes from GET /v1/default/banks.
  */
-async function fetchBankConfig(config, bank) {
+async function fetchBankConfig(config, bank, timeoutMs = 10000) {
     try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
         try {
             const res = await fetch(`${config.api_url}/v1/default/banks/${bank}/config`, {
                 headers: { "Authorization": `Bearer ${config.api_key || ""}` },
@@ -362,6 +362,27 @@ async function checkBankConfig(config, bank) {
         return { ok: false, authError: result.authError, status: result.status };
     const mission = result.data.config.reflect_mission ?? result.data.overrides.reflect_mission;
     return { ok: true, mission: typeof mission === "string" && mission.trim() ? mission : null };
+}
+async function createBank(config, bank) {
+    try {
+        const res = await fetchWithTimeout(`${config.api_url}/v1/default/banks/${bank}`, {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${config.api_key || ""}`,
+            },
+            body: JSON.stringify({}),
+        }, 10000);
+        if (res.status === 401 || res.status === 403) {
+            return { ok: false, status: res.status, authError: true };
+        }
+        if (!res.ok)
+            return { ok: false, status: res.status, authError: false };
+        return { ok: true };
+    }
+    catch (_) {
+        return { ok: false, authError: false };
+    }
 }
 async function fetchWithTimeout(url, options, timeoutMs) {
     const controller = new AbortController();
@@ -642,6 +663,59 @@ export default function hindsightExtension(pi) {
     let retainEligibleCount = 0;
     let currentPrompt = "";
     let shuttingDown = false;
+    let sessionDisabled = false;
+    function disabledToolResult() {
+        return {
+            content: [{ type: "text", text: "Hindsight is disabled for this session because its memory bank was not created. Start a new session to be prompted again." }],
+            details: {},
+            isError: true,
+        };
+    }
+    async function ensureBankExists(config, bank, ctx) {
+        const check = await fetchBankConfig(config, bank, 5000);
+        if (check.ok || check.status !== 404)
+            return true;
+        const canPrompt = ctx.hasUI !== false && typeof ctx.ui?.confirm === "function";
+        if (!canPrompt) {
+            log(`session_start: bank=${bank} missing and UI cannot prompt`);
+            ctx.ui.setStatus("hindsight", "disabled - memory bank missing");
+            ctx.ui.notify(`Hindsight memory bank "${bank}" does not exist.\n\n` +
+                "Run Pi interactively to be prompted to create it, or create it with:\n" +
+                `  hindsight bank create ${bank}`, "warning");
+            return false;
+        }
+        let create = false;
+        try {
+            create = await ctx.ui.confirm("Create Hindsight memory bank?", `Memory bank "${bank}" does not exist yet. Create it for this session?`);
+        }
+        catch (e) {
+            log(`session_start: bank=${bank} prompt failed: ${e}`);
+            return false;
+        }
+        if (!create) {
+            log(`session_start: bank=${bank} creation declined`);
+            ctx.ui.setStatus("hindsight", "disabled for this session (bank not created)");
+            ctx.ui.notify(`Hindsight memory bank "${bank}" was not created. Hindsight is disabled for this session.`, "info");
+            return false;
+        }
+        const created = await createBank(config, bank);
+        if (!created.ok) {
+            log(`session_start: bank=${bank} creation failed${created.status ? ` (HTTP ${created.status})` : ""}`);
+            ctx.ui.setStatus("hindsight", "disabled - bank creation failed");
+            ctx.ui.notify(`Failed to create Hindsight memory bank "${bank}"${created.status ? ` (HTTP ${created.status})` : ""}. Hindsight is disabled for this session.`, "error");
+            return false;
+        }
+        log(`session_start: created bank=${bank}`);
+        ctx.ui.notify(`Created Hindsight memory bank: ${bank}`, "info");
+        return true;
+    }
+    async function ensureActiveBanks(config, ctx) {
+        for (const bank of getRecallBanks(config)) {
+            if (!(await ensureBankExists(config, bank, ctx)))
+                return false;
+        }
+        return true;
+    }
     // Async retains are fire-and-forget during normal turns, but they must be
     // drained before Pi tears down or replaces the session runtime.
     const pendingRetains = new Map();
@@ -730,6 +804,7 @@ export default function hindsightExtension(pi) {
         recallAttempts = 0;
         currentPrompt = "";
         shuttingDown = false;
+        sessionDisabled = false;
         hookStats.sessionStart = { firedAt: new Date().toISOString(), result: "ok" };
         hookStats.recall = {};
         hookStats.retain = {};
@@ -746,6 +821,11 @@ export default function hindsightExtension(pi) {
                     "\n" +
                     "Fix: run /hindsight settings and set global_bank, or set homedir_project = true.", "warning");
                 log("session_start: no active banks — global_bank not set and homedir_project=false in home dir");
+            }
+            else if (!(await ensureActiveBanks(config, ctx))) {
+                sessionDisabled = true;
+                log("session_start: hindsight disabled for this session");
+                return;
             }
             const legacyIssues = detectLegacyKeys();
             if (legacyIssues.length > 0) {
@@ -830,6 +910,8 @@ export default function hindsightExtension(pi) {
             const config = getConfig();
             if (!config || !config.api_url)
                 return { content: [{ type: "text", text: "Hindsight not configured." }], details: {}, isError: true };
+            if (sessionDisabled)
+                return disabledToolResult();
             const banks = getRecallBanks(config);
             if (banks.length === 0) {
                 return { content: [{ type: "text", text: "Hindsight has no active banks. Set global_bank or enable homedir_project." }], details: {}, isError: true };
@@ -892,6 +974,8 @@ export default function hindsightExtension(pi) {
             const config = getConfig();
             if (!config || !config.api_url)
                 return { content: [{ type: "text", text: "Hindsight not configured." }], details: {}, isError: true };
+            if (sessionDisabled)
+                return disabledToolResult();
             const bank = getPrimaryBank(config);
             if (!bank)
                 return { content: [{ type: "text", text: "Hindsight: no bank available. Set global_bank in ~/.hindsight/config." }], details: {}, isError: true };
@@ -923,6 +1007,8 @@ export default function hindsightExtension(pi) {
             const config = getConfig();
             if (!config || !config.api_url)
                 return { content: [{ type: "text", text: "Hindsight not configured." }], details: {}, isError: true };
+            if (sessionDisabled)
+                return disabledToolResult();
             const bank = getPrimaryBank(config);
             if (!bank)
                 return { content: [{ type: "text", text: "Hindsight: no bank available. Set global_bank in ~/.hindsight/config." }], details: {}, isError: true };
@@ -954,6 +1040,10 @@ export default function hindsightExtension(pi) {
     });
     // -----------------------------------------------------------------------
     pi.on("before_agent_start", async (_event, ctx) => {
+        if (sessionDisabled) {
+            log("before_agent_start: hindsight disabled for this session");
+            return;
+        }
         if (recallDone) {
             log("before_agent_start: skip (recallDone=true)");
             return;
@@ -1089,6 +1179,10 @@ export default function hindsightExtension(pi) {
     // -----------------------------------------------------------------------
     pi.on("agent_end", async (event, ctx) => {
         log("agent_end: fired");
+        if (sessionDisabled) {
+            log("agent_end: hindsight disabled for this session");
+            return;
+        }
         const config = getConfig();
         if (!config || !config.api_url) {
             log("agent_end: no config, skipping");
@@ -1244,6 +1338,9 @@ export default function hindsightExtension(pi) {
             if (argsStr === "status") {
                 const lines = [];
                 let hasError = false;
+                if (sessionDisabled) {
+                    lines.push("Session: disabled (memory bank not created)");
+                }
                 // Config
                 lines.push(`URL:    ${config.api_url || "Not set"}`);
                 if (!config.api_url) {

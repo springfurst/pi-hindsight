@@ -48,7 +48,7 @@ pi install git:github.com/anh-chu/pi-hindsight
    /hindsight status
    ```
 
-That's it. Memory is fully automatic from here: recall before each turn, retain after each turn, no manual intervention needed.
+That's it. Memory is fully automatic from here: recall before each turn, retain after each turn, no manual intervention needed. The first time you use a project, Pi asks whether to create its memory bank. If you decline, Hindsight stays disabled for that session.
 
 ## Features
 
@@ -61,6 +61,7 @@ That's it. Memory is fully automatic from here: recall before each turn, retain 
 - **Feedback loop prevention:** Memory blocks are stripped from retained content. No recursive memory bloat.
 - **Noise filtering:** Low-signal tool calls (bash, read, write, edit, find, ls, powershell, etc.) are dropped from retained transcripts. Conversation and meaningful tool usage are kept.
 - **Retain metadata:** Auto and manual retains include source, project, session, bank, and mode metadata.
+- **Consent before bank creation:** If an active memory bank does not exist yet, Pi asks before creating it. Declining disables Hindsight for the rest of that session.
 
 ### Per-prompt controls
 
@@ -79,7 +80,7 @@ retain_enabled = false
 
 Or use the interactive `/hindsight settings` command.
 
-Manual tools (`hindsight_recall`, `hindsight_retain`, `hindsight_reflect`) remain available regardless.
+Manual tools (`hindsight_recall`, `hindsight_retain`, `hindsight_reflect`) remain available regardless of those toggles. If you decline the bank-creation prompt at session start, Hindsight (including manual tools) stays disabled for that session.
 
 ### Home directory handling
 
@@ -172,6 +173,8 @@ Hooks this session:
 Debug log: disabled (set HINDSIGHT_DEBUG=1 to enable)
 ```
 
+When you decline the bank-creation prompt, `/hindsight status` shows `Session: disabled (memory bank not created)` and no recall, retain, or manual memory tools run for that session.
+
 ### `/hindsight stats`
 Memory, entity, and document counts for all active banks. Nested values are shown as JSON rather than `[object Object]`.
 
@@ -195,7 +198,7 @@ Or to disable home directory as a project:
 
 ### Project bank
 
-Named `<dirname>` based on your current working directory, created automatically on first use. No setup required. All turns are retained here by default, so each project builds its own isolated memory over time.
+Named `<dirname>` based on your current working directory. At session start Hindsight checks whether the bank exists and asks before creating it. If you decline, Hindsight is disabled for the rest of the session; start a new session to be prompted again. All turns are retained here by default, so each project builds its own isolated memory over time.
 
 ### Global bank
 
