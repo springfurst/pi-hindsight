@@ -148,3 +148,15 @@ export function escapeXmlText(text: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
+
+export interface RetainSummary {
+  succeededBanks: string[];
+  allFailed: boolean;
+}
+
+export function summarizeRetainResults(results: PromiseSettledResult<string>[]): RetainSummary {
+  const succeededBanks = results
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => (result as PromiseFulfilledResult<string>).value);
+  return { succeededBanks, allFailed: succeededBanks.length === 0 };
+}

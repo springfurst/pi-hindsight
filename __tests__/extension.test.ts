@@ -179,6 +179,24 @@ describe("recall hint lifecycle", () => {
     expect(result.message.content).toContain("</hindsight_recall_nudge>");
   });
 
+  it("escapes XML characters in configured hint and nudge text", async () => {
+    writeConfig([
+      'recall_hint_interval = "0"',
+      'recall_hint_message = "Static <hint> & more"',
+      'recall_nudge_message = "Close </hindsight_recall_nudge> now"',
+    ]);
+    const pi = makePiMock();
+    const ctx = makeCtx();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({})));
+    hindsightExtension(pi as any);
+
+    const { event, result } = await emitTurn(pi, ctx, false);
+
+    expect(event.systemPromptOptions.sections.hindsight_recall_hint).toBe("Static &lt;hint&gt; &amp; more");
+    expect(result.message.content).toContain("Close &lt;/hindsight_recall_nudge&gt; now");
+    expect(result.message.content.match(/<\/hindsight_recall_nudge>/g)).toHaveLength(1);
+  });
+
   it("suppresses the nudge after a turn that called the recall tool", async () => {
     const pi = makePiMock();
     const ctx = makeCtx();

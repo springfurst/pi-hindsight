@@ -26,6 +26,7 @@ import {
   getLastUserMessage,
   redactSecrets,
   retainSkipReason,
+  summarizeRetainResults,
 } from "./retain.ts";
 import { createSessionState, resetSessionState } from "./session.ts";
 import { registerMessageRenderers } from "./renderers.ts";
@@ -420,10 +421,7 @@ ${state.sessionHintMessage}
     state.retainEligibleCount++;
 
     const reportResults = (results: PromiseSettledResult<string>[]) => {
-      const succeededBanks = results
-        .filter((result) => result.status === "fulfilled")
-        .map((result) => (result as PromiseFulfilledResult<string>).value);
-      const allFailed = succeededBanks.length === 0;
+      const { succeededBanks, allFailed } = summarizeRetainResults(results);
       state.hookStats.retain = {
         firedAt: new Date().toISOString(),
         result: allFailed ? "failed" : "ok",
