@@ -13,7 +13,17 @@
     "memory"
   ],
   "files": [
-    "*.ts",
+    "index.ts",
+    "api.ts",
+    "banks.ts",
+    "commands.ts",
+    "config.ts",
+    "logging.ts",
+    "missions.ts",
+    "renderers.ts",
+    "retain.ts",
+    "session.ts",
+    "tools.ts",
     "skills",
     "README.md"
   ],
