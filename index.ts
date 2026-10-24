@@ -27,7 +27,7 @@ import {
   redactSecrets,
   retainSkipReason,
 } from "./retain.ts";
-import { createSessionState, resetSessionState, type SessionState } from "./session.ts";
+import { createSessionState, resetSessionState } from "./session.ts";
 import { registerMessageRenderers } from "./renderers.ts";
 import { registerTools } from "./tools.ts";
 import { registerCommands } from "./commands.ts";

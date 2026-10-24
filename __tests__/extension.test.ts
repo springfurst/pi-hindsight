@@ -3,7 +3,7 @@
  * hooks, tools, and command.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -14,81 +14,7 @@ import hindsightExtension, {
   parseConfigFile,
   redactSecrets,
 } from "../index.ts";
-
-type Handler = (event: any, ctx: any) => Promise<unknown> | unknown;
-
-function makePiMock() {
-  const handlers = new Map<string, Handler[]>();
-  const tools = new Map<string, any>();
-  const commands = new Map<string, any>();
-  return {
-    on(event: string, handler: Handler) {
-      const list = handlers.get(event) ?? [];
-      list.push(handler);
-      handlers.set(event, list);
-      return () => {};
-    },
-    registerMessageRenderer() {},
-    registerTool(tool: any) {
-      tools.set(tool.name, tool);
-    },
-    registerCommand(name: string, command: any) {
-      commands.set(name, command);
-    },
-    registerShortcut() {},
-    registerFlag() {},
-    sendMessage: vi.fn(),
-    async emit(event: string, eventData: any = {}, ctx: any = {}) {
-      let result: unknown;
-      for (const handler of handlers.get(event) ?? []) {
-        result = await handler(eventData, ctx);
-      }
-      return result;
-    },
-    tools,
-    commands,
-  };
-}
-
-function makeCtx(prompt = "please remember this important implementation detail", sessionId = "session-1") {
-  return {
-    cwd: process.cwd(),
-    ui: {
-      setStatus: vi.fn(),
-      notify: vi.fn(),
-    },
-    sessionManager: {
-      getEntries() {
-        return [
-          {
-            type: "message",
-            message: { role: "user", content: prompt },
-          },
-        ];
-      },
-      getSessionId() {
-        return sessionId;
-      },
-    },
-  };
-}
-
-function makeBeforeAgentStartEvent() {
-  return {
-    type: "before_agent_start",
-    messageType: "user",
-    prompt: "test prompt",
-    systemPrompt: "base system prompt",
-    systemPromptOptions: { sections: {} },
-  } as any;
-}
-
-function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json", ...headers },
-  });
-}
+import { makeBeforeAgentStartEvent, makeCtx, makePiMock, jsonResponse } from "./helpers.ts";
 
 let tempHome = "";
 let originalHome: string | undefined;
@@ -161,6 +87,14 @@ describe("config parsing", () => {
     expect(config!.auto_missions).toBe(false);
     expect(config!.homedir_project).toBe(false);
     expect(config!.retain_feedback).toBe("none");
+  });
+
+  it("invalidates cached config when files change", () => {
+    writeConfig(["recall_budget = \"low\""]);
+    expect(getConfig()!.recall_budget).toBe("low");
+
+    writeConfig(["recall_budget = \"high\""]);
+    expect(getConfig()!.recall_budget).toBe("high");
   });
 
   it("preserves escaped quotes and ignores comment markers inside strings", () => {

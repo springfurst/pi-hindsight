@@ -8,57 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import hindsightExtension from "../index.ts";
-
-type Handler = (event: any, ctx: any) => Promise<unknown> | unknown;
-
-function makePiMock() {
-  const handlers = new Map<string, Handler[]>();
-  return {
-    on(event: string, handler: Handler) {
-      const list = handlers.get(event) ?? [];
-      list.push(handler);
-      handlers.set(event, list);
-      return () => {};
-    },
-    registerMessageRenderer() {},
-    registerTool() {},
-    registerCommand() {},
-    registerShortcut() {},
-    registerFlag() {},
-    sendMessage: vi.fn(),
-    async emit(event: string, eventData: any = {}, ctx: any = {}) {
-      for (const handler of handlers.get(event) ?? []) {
-        await handler(eventData, ctx);
-      }
-    },
-  };
-}
-
-function makeCtx() {
-  return {
-    cwd: process.cwd(),
-    ui: {
-      setStatus: vi.fn(),
-      notify: vi.fn(),
-    },
-    sessionManager: {
-      getEntries() {
-        return [
-          {
-            type: "message",
-            message: {
-              role: "user",
-              content: "please remember this important implementation detail",
-            },
-          },
-        ];
-      },
-      getSessionId() {
-        return "flush-test-session";
-      },
-    },
-  };
-}
+import { makeCtx, makePiMock } from "./helpers.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

@@ -386,8 +386,8 @@ This project uses [pnpm](https://pnpm.io/).
 ```bash
 pnpm install
 pnpm test
+pnpm typecheck
 pnpm check
-pnpm check:sync
 ```
 
-`check:sync` rebuilds `index.js` and fails if the committed generated file is out of date.
+`check` runs TypeScript type checking. Pi loads the TypeScript entry point directly, so there is no generated JavaScript file to keep in sync.

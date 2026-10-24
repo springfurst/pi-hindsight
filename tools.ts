@@ -4,7 +4,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { DEFAULT_RECALL_TIMEOUT_MS, DEFAULT_REFLECT_TIMEOUT_MS, getConfig } from "./config.ts";
+import { DEFAULT_RECALL_TIMEOUT_MS, DEFAULT_REFLECT_TIMEOUT_MS, getConfig, type HindsightConfig } from "./config.ts";
 import { HindsightClient } from "./api.ts";
 import { getPrimaryBank, getRecallBanks } from "./banks.ts";
 import { redactSecrets, retainMetadata } from "./retain.ts";
@@ -31,11 +31,24 @@ export function registerTools(pi: ExtensionAPI, runtime: ToolRuntime): void {
     isError: true,
   });
 
-  const errorResult = (text: string) => ({
+  type ToolResult = {
+    content: { type: "text"; text: string }[];
+    details: Record<string, unknown>;
+    isError?: boolean;
+  };
+
+  const errorResult = (text: string): ToolResult => ({
     content: [{ type: "text" as const, text }],
     details: {},
     isError: true,
   });
+
+  function requireToolConfig(): { config: HindsightConfig } | { error: ToolResult } {
+    const config = getConfig(state.cwd);
+    if (!config || !config.api_url) return { error: errorResult("Hindsight not configured.") };
+    if (state.disabled) return { error: disabledToolResult() };
+    return { config };
+  }
 
   pi.registerTool({
     name: "hindsight_recall",
@@ -46,9 +59,9 @@ export function registerTools(pi: ExtensionAPI, runtime: ToolRuntime): void {
     }),
     async execute(_id, params) {
       const { query } = params as { query: string };
-      const config = getConfig(state.cwd);
-      if (!config || !config.api_url) return errorResult("Hindsight not configured.");
-      if (state.disabled) return disabledToolResult();
+      const setup = requireToolConfig();
+      if ("error" in setup) return setup.error;
+      const { config } = setup;
       state.recallCalledThisTurn = true;
 
       const banks = getRecallBanks(config, state.cwd);
@@ -108,9 +121,9 @@ export function registerTools(pi: ExtensionAPI, runtime: ToolRuntime): void {
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const { content } = params as { content: string };
-      const config = getConfig(state.cwd);
-      if (!config || !config.api_url) return errorResult("Hindsight not configured.");
-      if (state.disabled) return disabledToolResult();
+      const setup = requireToolConfig();
+      if ("error" in setup) return setup.error;
+      const { config } = setup;
 
       const bank = getPrimaryBank(config, state.cwd);
       if (!bank) {
@@ -124,13 +137,7 @@ export function registerTools(pi: ExtensionAPI, runtime: ToolRuntime): void {
           content: safeContent,
           context: "pi coding session: explicit user save",
           timestamp: new Date().toISOString(),
-          metadata: {
-            source: "pi-hindsight",
-            mode: "manual",
-            project: state.cwd.split(/[\\/]/).filter(Boolean).pop() || state.cwd,
-            session_id: sessionId,
-            bank_id: bank,
-          },
+          metadata: retainMetadata(sessionId, bank, "manual", state.cwd),
         }, false);
         return { content: [{ type: "text" as const, text: "Memory explicitly retained." }], details: {} };
       } catch (error) {
@@ -148,9 +155,9 @@ export function registerTools(pi: ExtensionAPI, runtime: ToolRuntime): void {
     }),
     async execute(_id, params) {
       const { query } = params as { query: string };
-      const config = getConfig(state.cwd);
-      if (!config || !config.api_url) return errorResult("Hindsight not configured.");
-      if (state.disabled) return disabledToolResult();
+      const setup = requireToolConfig();
+      if ("error" in setup) return setup.error;
+      const { config } = setup;
 
       const bank = getPrimaryBank(config, state.cwd);
       if (!bank) {
