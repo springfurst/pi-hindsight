@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import hindsightExtension, { getConfig, parseConfigFile, redactSecrets } from "../index.ts";
@@ -257,7 +257,8 @@ describe("retain lifecycle", () => {
     await pi.emit("session_shutdown", { reason: "quit" }, ctx);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toContain("/banks/project-");
+    expect(String(fetchMock.mock.calls[0][0])).toContain(`/banks/${basename(process.cwd())}/`);
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("/banks/project-");
   });
 
   it("skips auto-retain when no banks are active", async () => {
@@ -344,7 +345,7 @@ describe("reflect and status", () => {
       .map((call) => String(call[0]))
       .filter((url) => url.includes("/config"));
     expect(configUrls.some((url) => url.includes("/banks/global/config"))).toBe(true);
-    expect(configUrls.every((url) => !url.includes("/project-"))).toBe(true);
+    expect(configUrls.every((url) => url.includes("/banks/global/config"))).toBe(true);
   });
 
   it("treats a missing bank as not created yet in /hindsight status", async () => {

@@ -9,7 +9,7 @@
 - Tools: `hindsight_recall`, `hindsight_retain`, `hindsight_reflect`
 - Commands: `/hindsight [status|stats|config]`
 - Config: `.ini` format (`~/.hindsight/config`)
-- Bank strategy: global + `project-X` always
+- Bank strategy: global + `<dirname>` always
 - Retain skips trivial prompts; `#nomem`/`#skip` opt-out; `#global`/`#me` opt into global bank retention
 - Full transcript retain (user + assistant + tool calls) with `document_id` + `update_mode: append`
 

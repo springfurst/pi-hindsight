@@ -12,7 +12,7 @@ Focus on user preferences, communication style, workflow habits, and recurring p
 Observations are durable user preferences, coding conventions, tooling decisions, and workflow patterns. Focus on what the user consistently does or prefers — not one-time events or actions. Merge repeated patterns into single observations. Highlight when behavior contradicts previous observations.
 ```
 
-## Project Banks (`project-*`)
+## Project Banks (named after the working directory)
 
 ### retain_mission
 ```

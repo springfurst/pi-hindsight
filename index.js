@@ -253,7 +253,7 @@ function getConfigWithSource() {
 function getProjectBank(config) {
     if (config?.project_bank_id)
         return config.project_bank_id;
-    return `project-${basename(sessionCwd)}`;
+    return basename(sessionCwd);
 }
 function isHomeDirSession() {
     return sessionCwd === homedir();

@@ -83,7 +83,7 @@ Manual tools (`hindsight_recall`, `hindsight_retain`, `hindsight_reflect`) remai
 
 ### Home directory handling
 
-When Pi runs from your home directory, the global config (`~/.hindsight/config`) and local config (`.hindsight/config` in CWD) are the same file. This means a `project-<username>` bank is created alongside your global bank, causing duplicate recall and retain.
+When Pi runs from your home directory, the global config (`~/.hindsight/config`) and local config (`.hindsight/config` in CWD) are the same file. This means a `<username>` bank is created alongside your global bank, causing duplicate recall and retain.
 
 To fix this, set `homedir_project = false` in your global config:
 
@@ -147,7 +147,7 @@ recall_max_tokens = 512
 | `reflect_timeout` | `60000` | Timeout in milliseconds for the manual reflect tool. |
 | `retain_timeout` | `60000` | Timeout in milliseconds for individual retain requests. |
 | `flush_timeout` | `30000` | Maximum time to wait for pending retains during shutdown, switch, fork, or compaction. Requests still pending are aborted. |
-| `homedir_project` | `true` | Treat home directory as a project. Set `false` to prevent creating a `project-<username>` bank when running from your home directory. Recall and retain use only `global_bank` instead. |
+| `homedir_project` | `true` | Treat home directory as a project. Set `false` to prevent creating a `<username>` bank when running from your home directory. Recall and retain use only `global_bank` instead. |
 | `global_bank` | _(none)_ | Bank ID for cross-project memory. When set, this bank is queried alongside the project bank on every recall. Turns tagged `#global` or `#me` are also retained here. Leave unset if you only want per-project memory. |
 
 ## Commands
@@ -159,7 +159,7 @@ Full health check: server reachability, auth, bank access, hook state, debug log
 URL:    http://localhost:8888
 Server: ✓ online
 API:    1.1.0
-Bank:   project-myapp
+Bank:   myapp
   ✓ auth ok
   mission: Focus on coding conventions...
 Global: global-bank
@@ -167,7 +167,7 @@ Global: global-bank
 Hooks this session:
   session_start:      ✓ ok
   recall:             ✓ ok (3 memories)
-  retain:             ✓ ok (project-myapp)
+  retain:             ✓ ok (myapp)
 
 Debug log: disabled (set HINDSIGHT_DEBUG=1 to enable)
 ```
@@ -195,7 +195,7 @@ Or to disable home directory as a project:
 
 ### Project bank
 
-Named `project-<dirname>` based on your current working directory, created automatically on first use. No setup required. All turns are retained here by default, so each project builds its own isolated memory over time.
+Named `<dirname>` based on your current working directory, created automatically on first use. No setup required. All turns are retained here by default, so each project builds its own isolated memory over time.
 
 ### Global bank
 

@@ -280,7 +280,7 @@ function getConfigWithSource(): { global: Record<string, string>; local: Record<
 
 function getProjectBank(config?: HindsightConfig | null): string {
   if (config?.project_bank_id) return config.project_bank_id;
-  return `project-${basename(sessionCwd)}`;
+  return basename(sessionCwd);
 }
 
 function isHomeDirSession(): boolean {
