@@ -55,6 +55,8 @@ export interface HindsightConfig {
   recall_timeout?: number;
   recall_hint_interval?: number;
   recall_hint_message?: string;
+  recall_nudge_message?: string;
+  recall_nudge_display?: "message" | "indicator";
   reflect_timeout?: number;
   retain_timeout?: number;
   flush_timeout?: number;
@@ -70,6 +72,9 @@ export interface HindsightConfig {
 export const DEFAULT_RECALL_HINT_INTERVAL = 1;
 export const DEFAULT_RECALL_HINT_MESSAGE =
   "Persistent memory is available through the `hindsight_recall` tool. Before answering, consider whether recalling relevant context would help; if so, call `hindsight_recall` with a focused query. Skip it when the request does not depend on past context.";
+export const DEFAULT_RECALL_NUDGE_MESSAGE =
+  "You have not recalled memory recently. Consider whether hindsight_recall would provide useful context for the current request.";
+export const DEFAULT_RECALL_NUDGE_DISPLAY: "message" | "indicator" = "indicator";
 
 function stripInlineComment(raw: string): string {
   let quote: string | null = null;
@@ -177,6 +182,9 @@ export function getConfig(): HindsightConfig | null {
       ["message", "status", "both", "none"].includes(feedbackRaw)
         ? feedbackRaw as "message" | "status" | "both" | "none"
         : "status";
+    const nudgeDisplayRaw = (merged.recall_nudge_display || DEFAULT_RECALL_NUDGE_DISPLAY).trim().toLowerCase();
+    const recall_nudge_display: "message" | "indicator" =
+      nudgeDisplayRaw === "message" || nudgeDisplayRaw === "true" ? "message" : "indicator";
 
     return {
       api_url: merged.api_url?.trim().replace(/\/+$/, "") || undefined,
@@ -189,6 +197,8 @@ export function getConfig(): HindsightConfig | null {
       recall_timeout: parseOptionalPositiveInt(merged.recall_timeout),
       recall_hint_interval: parseOptionalNonNegativeInt(merged.recall_hint_interval) ?? DEFAULT_RECALL_HINT_INTERVAL,
       recall_hint_message: merged.recall_hint_message?.trim() || DEFAULT_RECALL_HINT_MESSAGE,
+      recall_nudge_message: merged.recall_nudge_message?.trim() || DEFAULT_RECALL_NUDGE_MESSAGE,
+      recall_nudge_display,
       reflect_timeout: parseOptionalPositiveInt(merged.reflect_timeout),
       retain_timeout: parseOptionalPositiveInt(merged.retain_timeout),
       flush_timeout: parseOptionalPositiveInt(merged.flush_timeout),
@@ -745,9 +755,11 @@ async function fetchWithRateLimitRetry(
 
 export default function hindsightExtension(pi: ExtensionAPI) {
   let turnsSinceRecall = 0;
-  let firstUserTurn = true;
   let activeUserTurn = false;
   let recallCalledThisTurn = false;
+  let sessionHintResolved = false;
+  let sessionHintActive = false;
+  let sessionHintMessage = "";
   let retainSuccessCount = 0;
   let retainEligibleCount = 0;
   let currentPrompt = "";
@@ -918,9 +930,11 @@ export default function hindsightExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     sessionCwd = ctx.cwd || process.cwd();
     turnsSinceRecall = 0;
-    firstUserTurn = true;
     activeUserTurn = false;
     recallCalledThisTurn = false;
+    sessionHintResolved = false;
+    sessionHintActive = false;
+    sessionHintMessage = "";
     currentPrompt = "";
     shuttingDown = false;
     sessionDisabled = false;
@@ -1009,6 +1023,12 @@ export default function hindsightExtension(pi: ExtensionAPI) {
     return new Text(text, 0, 0);
   });
 
+
+  pi.registerMessageRenderer("hindsight-recall-nudge", (_message, _options, theme) => {
+    let text = theme.fg("accent", "💡 Hindsight");
+    text += theme.fg("muted", " recall nudge sent");
+    return new Text(text, 0, 0);
+  });
 
   pi.registerMessageRenderer("hindsight-retain", (message, _options, theme) => {
     const banks: string[] = (message.details as any)?.banks ?? [];
@@ -1176,13 +1196,6 @@ export default function hindsightExtension(pi: ExtensionAPI) {
       log("before_agent_start: hindsight disabled for this session");
       return;
     }
-    if (event.messageType !== "user") {
-      log(`before_agent_start: skip hint for ${event.messageType} run`);
-      return;
-    }
-
-    activeUserTurn = true;
-    recallCalledThisTurn = false;
 
     const config = getConfig();
     if (!config || !config.api_url) {
@@ -1190,49 +1203,84 @@ export default function hindsightExtension(pi: ExtensionAPI) {
       ctx.ui.setStatus("hindsight", "⚠ not configured");
       return;
     }
-    if (config.recall_enabled === false) {
-      log("before_agent_start: recall hint disabled by config");
-      return;
-    }
-    if (getRecallBanks(config).length === 0) {
-      log("before_agent_start: no active banks, skipping recall hint");
-      return;
+
+    // Freeze the static system hint for the session. Changing it later would
+    // change the prompt prefix and invalidate provider prompt caches.
+    if (!sessionHintResolved) {
+      sessionHintActive = config.recall_enabled !== false && getRecallBanks(config).length > 0;
+      sessionHintMessage = (config.recall_hint_message || DEFAULT_RECALL_HINT_MESSAGE).trim();
+      sessionHintResolved = true;
+      log(`before_agent_start: session recall hint ${sessionHintActive ? "enabled" : "disabled"}`);
     }
 
-    const interval = config.recall_hint_interval ?? DEFAULT_RECALL_HINT_INTERVAL;
-    const shouldHint = interval === 0 || firstUserTurn || turnsSinceRecall >= interval;
-    firstUserTurn = false;
-    if (!shouldHint) {
-      log(`before_agent_start: recall hint skipped (turnsSinceRecall=${turnsSinceRecall}, interval=${interval})`);
-      return;
-    }
+    let result: { systemPrompt?: string; message?: any } | undefined;
 
-    const hint = (config.recall_hint_message || DEFAULT_RECALL_HINT_MESSAGE).trim();
-    if (!hint) {
-      log("before_agent_start: recall hint message is empty");
-      return;
-    }
-
-    let fallbackResult: { systemPrompt: string } | undefined;
-    if (event.systemPromptOptions?.sections) {
-      event.systemPromptOptions.sections.hindsight_recall_hint = hint;
-    } else if (typeof event.systemPrompt === "string") {
-      fallbackResult = {
-        systemPrompt: `${event.systemPrompt}
+    if (sessionHintActive && sessionHintMessage) {
+      if (event.systemPromptOptions?.sections) {
+        event.systemPromptOptions.sections.hindsight_recall_hint = sessionHintMessage;
+      } else if (typeof event.systemPrompt === "string") {
+        result = {
+          systemPrompt: `${event.systemPrompt}
 
 <hindsight_recall_hint>
-${hint}
+${sessionHintMessage}
 </hindsight_recall_hint>`,
-      };
-    } else {
-      log("before_agent_start: no system prompt available for recall hint");
-      return;
+        };
+      } else {
+        log("before_agent_start: no system prompt available for recall hint");
+      }
     }
 
-    hookStats.recall = { firedAt: new Date().toISOString(), result: "ok", detail: "hint inserted" };
-    log(`before_agent_start: inserted recall hint (turnsSinceRecall=${turnsSinceRecall}, interval=${interval})`);
-    ctx.ui.notify("Hindsight: recall hint inserted", "info");
-    return fallbackResult;
+    if (event.messageType !== "user") {
+      log(`before_agent_start: skip nudge for ${event.messageType} run`);
+      return result;
+    }
+
+    activeUserTurn = true;
+    recallCalledThisTurn = false;
+
+    if (!sessionHintActive) return result;
+
+    const interval = config.recall_hint_interval ?? DEFAULT_RECALL_HINT_INTERVAL;
+    const shouldNudge = interval === 0 || turnsSinceRecall >= interval;
+    if (!shouldNudge) {
+      log(`before_agent_start: recall nudge skipped (turnsSinceRecall=${turnsSinceRecall}, interval=${interval})`);
+      return result;
+    }
+
+    const nudgeText = (config.recall_nudge_message || DEFAULT_RECALL_NUDGE_MESSAGE).trim();
+    if (!nudgeText) {
+      log("before_agent_start: recall nudge message is empty");
+      return result;
+    }
+
+    // The nudge is append-only, so it never changes the cached prompt prefix.
+    // Pi converts custom messages to the user role for the model, hence the XML
+    // wrapper; the UI can either render it as a custom block or hide it.
+    const display = config.recall_nudge_display === "message";
+    const nudge = {
+      customType: "hindsight-recall-nudge",
+      content: `<hindsight_recall_nudge>
+${nudgeText}
+</hindsight_recall_nudge>`,
+      display,
+      details: { interval, turnsSinceRecall },
+    };
+
+    hookStats.recall = {
+      firedAt: new Date().toISOString(),
+      result: "ok",
+      detail: display ? "nudge message" : "nudge indicator",
+    };
+
+    if (display) {
+      log(`before_agent_start: appended recall nudge as custom message (turnsSinceRecall=${turnsSinceRecall}, interval=${interval})`);
+    } else {
+      log(`before_agent_start: appended hidden recall nudge with UI indicator (turnsSinceRecall=${turnsSinceRecall}, interval=${interval})`);
+      ctx.ui.setStatus("hindsight", "💡 recall nudge sent");
+    }
+
+    return { ...(result ?? {}), message: nudge };
   });
 
   pi.on("agent_settled", async () => {
@@ -1528,9 +1576,11 @@ ${hint}
           { key: "api_key", label: "API Key", isBool: false, default: "(required)" },
           { key: "global_bank", label: "Global Bank", isBool: false, default: "(not set)" },
           { key: "project_bank_id", label: "Project Bank Override", isBool: false, default: "(auto)" },
-          { key: "recall_enabled", label: "Recall Hint", isBool: true, default: "true" },
-          { key: "recall_hint_interval", label: "Recall Hint Every N Turns", isBool: false, default: "1" },
-          { key: "recall_hint_message", label: "Recall Hint Message", isBool: false, default: "(default)" },
+          { key: "recall_enabled", label: "Recall Hints", isBool: true, default: "true" },
+          { key: "recall_hint_interval", label: "Recall Nudge Interval", isBool: false, default: "1" },
+          { key: "recall_hint_message", label: "Recall System Hint", isBool: false, default: "(default)" },
+          { key: "recall_nudge_message", label: "Recall Nudge Message", isBool: false, default: "(default)" },
+          { key: "recall_nudge_display", label: "Recall Nudge UI (message|indicator)", isBool: false, default: "indicator" },
           { key: "retain_enabled", label: "Auto-Retain", isBool: true, default: "true" },
           { key: "async_retain", label: "Async Retain", isBool: true, default: "true" },
           { key: "retain_feedback", label: "Retain Feedback", isBool: false, default: "status" },

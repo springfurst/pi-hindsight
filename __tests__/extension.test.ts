@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 
 import hindsightExtension, {
   DEFAULT_RECALL_HINT_MESSAGE,
+  DEFAULT_RECALL_NUDGE_MESSAGE,
   getConfig,
   parseConfigFile,
   redactSecrets,
@@ -133,6 +134,8 @@ describe("config parsing", () => {
       'recall_timeout = "0"',
       'recall_hint_interval = "0"',
       'recall_hint_message = "Custom memory hint."',
+      'recall_nudge_message = "Custom memory nudge."',
+      'recall_nudge_display = "message"',
       'reflect_timeout = "not-a-number"',
       'retain_timeout = "45000"',
       'async_retain = "False"',
@@ -149,6 +152,8 @@ describe("config parsing", () => {
     expect(config!.recall_timeout).toBeUndefined();
     expect(config!.recall_hint_interval).toBe(0);
     expect(config!.recall_hint_message).toBe("Custom memory hint.");
+    expect(config!.recall_nudge_message).toBe("Custom memory nudge.");
+    expect(config!.recall_nudge_display).toBe("message");
     expect(config!.reflect_timeout).toBeUndefined();
     expect(config!.retain_timeout).toBe(45000);
     expect(config!.async_retain).toBe(false);
@@ -188,59 +193,59 @@ describe("recall hint lifecycle", () => {
 
   async function emitTurn(pi: ReturnType<typeof makePiMock>, ctx: any, recall: boolean) {
     const event = makeBeforeAgentStartEvent();
-    await pi.emit("before_agent_start", event, ctx);
+    const result: any = await pi.emit("before_agent_start", event, ctx);
     if (recall) {
       await pi.tools
         .get("hindsight_recall")
         .execute("call-1", { query: "test query" }, undefined, undefined, ctx);
     }
     await pi.emit("agent_settled", {}, ctx);
-    return event;
+    return { event, result };
   }
 
-  it("inserts a system hint on the first turn instead of querying memory", async () => {
+  it("keeps a stable system hint and appends a hidden nudge when due", async () => {
     const pi = makePiMock();
     const ctx = makeCtx();
     const fetchMock = vi.fn(async () => jsonResponse({ results: [{ text: "Should not be fetched" }] }));
     vi.stubGlobal("fetch", fetchMock);
     hindsightExtension(pi as any);
 
-    const event = makeBeforeAgentStartEvent();
-    const result = await pi.emit("before_agent_start", event, ctx);
+    const first = await emitTurn(pi, ctx, false);
+    const second = await emitTurn(pi, ctx, false);
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(result).toBeUndefined();
-    expect(event.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
-    expect(ctx.ui.notify).toHaveBeenCalledWith("Hindsight: recall hint inserted", "info");
+    expect(first.event.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(second.event.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(first.result).toBeUndefined();
+    expect(second.result.message).toMatchObject({
+      customType: "hindsight-recall-nudge",
+      display: false,
+    });
+    expect(second.result.message.content).toContain("<hindsight_recall_nudge>");
+    expect(second.result.message.content).toContain(DEFAULT_RECALL_NUDGE_MESSAGE);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith("hindsight", "💡 recall nudge sent");
   });
 
-  it("uses a configured hint message", async () => {
-    writeConfig(['recall_hint_message = "Custom memory hint."']);
+  it("uses configured hint and nudge messages", async () => {
+    writeConfig([
+      'recall_hint_interval = "0"',
+      'recall_hint_message = "Static memory hint."',
+      'recall_nudge_message = "Custom memory nudge."',
+    ]);
     const pi = makePiMock();
     const ctx = makeCtx();
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({})));
     hindsightExtension(pi as any);
 
-    const event = await emitTurn(pi, ctx, false);
+    const { event, result } = await emitTurn(pi, ctx, false);
 
-    expect(event.systemPromptOptions.sections.hindsight_recall_hint).toBe("Custom memory hint.");
-    expect(event.systemPromptOptions.sections.hindsight_recall_hint).not.toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(event.systemPromptOptions.sections.hindsight_recall_hint).toBe("Static memory hint.");
+    expect(result.message.content).toContain("<hindsight_recall_nudge>");
+    expect(result.message.content).toContain("Custom memory nudge.");
+    expect(result.message.content).toContain("</hindsight_recall_nudge>");
   });
 
-  it("reinserts the hint after a turn without a recall call", async () => {
-    const pi = makePiMock();
-    const ctx = makeCtx();
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({})));
-    hindsightExtension(pi as any);
-
-    const first = await emitTurn(pi, ctx, false);
-    expect(first.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
-
-    const second = await emitTurn(pi, ctx, false);
-    expect(second.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
-  });
-
-  it("suppresses the hint after a turn that called the recall tool", async () => {
+  it("suppresses the nudge after a turn that called the recall tool", async () => {
     const pi = makePiMock();
     const ctx = makeCtx();
     const fetchMock = vi.fn(async () => jsonResponse({ results: [] }));
@@ -248,13 +253,12 @@ describe("recall hint lifecycle", () => {
     hindsightExtension(pi as any);
 
     const first = await emitTurn(pi, ctx, true);
-    expect(first.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(first.result).toBeUndefined();
     expect(fetchMock).toHaveBeenCalled();
 
-    ctx.ui.notify.mockClear();
     const second = await emitTurn(pi, ctx, false);
-    expect(second.systemPromptOptions.sections.hindsight_recall_hint).toBeUndefined();
-    expect(ctx.ui.notify).not.toHaveBeenCalledWith("Hindsight: recall hint inserted", "info");
+    expect(second.result).toBeUndefined();
+    expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("hindsight", "💡 recall nudge sent");
   });
 
   it("waits for the configured number of turns without recall", async () => {
@@ -268,12 +272,12 @@ describe("recall hint lifecycle", () => {
     const second = await emitTurn(pi, ctx, false);
     const third = await emitTurn(pi, ctx, false);
 
-    expect(first.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
-    expect(second.systemPromptOptions.sections.hindsight_recall_hint).toBeUndefined();
-    expect(third.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(first.result).toBeUndefined();
+    expect(second.result).toBeUndefined();
+    expect(third.result.message).toMatchObject({ display: false });
   });
 
-  it("hints every turn when the interval is 0", async () => {
+  it("nudges every turn when the interval is 0", async () => {
     writeConfig(['recall_hint_interval = "0"']);
     const pi = makePiMock();
     const ctx = makeCtx();
@@ -281,12 +285,41 @@ describe("recall hint lifecycle", () => {
     hindsightExtension(pi as any);
 
     const first = await emitTurn(pi, ctx, true);
-    ctx.ui.notify.mockClear();
     const second = await emitTurn(pi, ctx, false);
 
-    expect(first.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
-    expect(second.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
-    expect(ctx.ui.notify).toHaveBeenCalledWith("Hindsight: recall hint inserted", "info");
+    expect(first.result.message).toMatchObject({ display: false });
+    expect(second.result.message).toMatchObject({ display: false });
+  });
+
+  it("renders the nudge as a custom message when configured", async () => {
+    writeConfig(['recall_hint_interval = "0"', 'recall_nudge_display = "message"']);
+    const pi = makePiMock();
+    const ctx = makeCtx();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({})));
+    hindsightExtension(pi as any);
+
+    const { result } = await emitTurn(pi, ctx, false);
+
+    expect(result.message).toMatchObject({
+      customType: "hindsight-recall-nudge",
+      display: true,
+    });
+    expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("hindsight", "💡 recall nudge sent");
+  });
+
+  it("freezes the system hint for the session", async () => {
+    writeConfig(['recall_hint_message = "First hint."']);
+    const pi = makePiMock();
+    const ctx = makeCtx();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({})));
+    hindsightExtension(pi as any);
+
+    const first = await emitTurn(pi, ctx, false);
+    writeConfig(['recall_hint_message = "Second hint."']);
+    const second = await emitTurn(pi, ctx, false);
+
+    expect(first.event.systemPromptOptions.sections.hindsight_recall_hint).toBe("First hint.");
+    expect(second.event.systemPromptOptions.sections.hindsight_recall_hint).toBe("First hint.");
   });
 });
 

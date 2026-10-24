@@ -54,14 +54,15 @@ That's it. Pi nudges the agent to recall when useful and retains each turn autom
 
 ### Memory lifecycle
 
-- **Recall hint:** Before a turn, a short system-prompt hint tells the agent that `hindsight_recall` is available and lets it decide whether to search memory. No automatic recall request is made from the user prompt.
+- **Static recall hint:** A short system-prompt section tells the agent that `hindsight_recall` is available and lets it decide whether to search memory. It is kept stable for the session so it does not invalidate prompt caches.
 - **Auto-retain:** After each agent turn, the conversation is appended to a per-session memory document. Only the new delta is processed, no redundant work.
 - **Graceful flush:** Pending async retains are drained before shutdown, session switch, fork, and compaction. Hung requests are aborted at the configurable flush deadline.
 - **Secret redaction:** Common API keys, bearer tokens, passwords, and similar credentials are redacted before retain by default.
 - **Feedback loop prevention:** Memory blocks are stripped from retained content. No recursive memory bloat.
 - **Noise filtering:** Low-signal tool calls (bash, read, write, edit, find, ls, powershell, etc.) are dropped from retained transcripts. Conversation and meaningful tool usage are kept.
 - **Retain metadata:** Auto and manual retains include source, project, session, bank, and mode metadata.
-- **Configurable hint cadence:** `recall_hint_interval` controls how many turns without a recall call pass before the hint is shown again. The default is `1`; `0` shows it every turn.
+- **Append-only nudge:** If the agent goes `recall_hint_interval` turns without calling `hindsight_recall`, Pi appends a small XML-wrapped reminder. It never changes the cached prompt prefix. The default interval is `1`; `0` nudges every turn.
+- **Nudge UI modes:** `recall_nudge_display = "indicator"` hides the nudge from chat and shows a footer indicator. `recall_nudge_display = "message"` renders it through a custom Hindsight message style instead of a user bubble.
 - **Consent before bank creation:** If an active memory bank does not exist yet, Pi asks before creating it. Declining disables Hindsight for the rest of that session.
 
 ### Per-prompt controls
@@ -99,7 +100,8 @@ With this set, sessions started from the home directory use only the global bank
 
 | Event | What you see |
 |-------|-------------|
-| Recall hint | Hindsight: recall hint inserted |
+| Recall nudge (`message`) | 💡 Hindsight recall nudge sent |
+| Recall nudge (`indicator`) | Footer status: 💡 recall nudge sent |
 | Retain (success) | 💾 Hindsight saved turn to memory → bank-name |
 | Retain (failure) | 💾 Hindsight retain failed, use hindsight_retain to save manually |
 
@@ -141,9 +143,11 @@ recall_max_tokens = 512
 | `recall_budget` | `mid` | Retrieval depth: `low`, `mid`, `high`. Higher = more coverage but added latency. |
 | `recall_max_tokens` | Server default (4096) | Max tokens returned by `hindsight_recall`. Lower values reduce context size. Recommended: `800`. |
 | `async_retain` | `true` | Non-blocking retain. Set `false` for sync retain with failure notifications. |
-| `recall_enabled` | `true` | Enable the recall hint before agent turns. Set `false` to stop nudging the agent. The `hindsight_recall` tool still works. |
-| `recall_hint_interval` | `1` | Show the recall hint on the first turn, then again after this many turns without a `hindsight_recall` call. `0` shows it every turn. |
-| `recall_hint_message` | See below | Text inserted into a system-prompt section. Customize it to change how the agent is nudged to use `hindsight_recall`. |
+| `recall_enabled` | `true` | Enable the static system hint and the appended nudge. Set `false` to stop both. The `hindsight_recall` tool still works. |
+| `recall_hint_interval` | `1` | Append a nudge after this many user turns without a `hindsight_recall` call. `0` nudges every turn. |
+| `recall_hint_message` | See below | Static system-prompt hint text. Frozen for the session so mid-session config edits cannot change the cache prefix. |
+| `recall_nudge_message` | See below | Text inside the appended `<hindsight_recall_nudge>` XML block. |
+| `recall_nudge_display` | `indicator` | `indicator` hides the nudge in chat and shows a footer status; `message` renders a custom Hindsight line in chat. |
 | `retain_enabled` | `true` | Enable automatic retain after agent turns. Set `false` to disable auto-retain for this project. Manual `hindsight_retain` tool still works. |
 | `redact_secrets` | `true` | Redact common credentials from auto- and manually-retained content before sending it to Hindsight. |
 | `auto_missions` | `true` | Automatically configure retain/observations missions on the active banks at session start. Set `false` to manage bank missions yourself. |
@@ -155,6 +159,12 @@ recall_max_tokens = 512
 The default `recall_hint_message` is:
 
 > Persistent memory is available through the `hindsight_recall` tool. Before answering, consider whether recalling relevant context would help; if so, call `hindsight_recall` with a focused query. Skip it when the request does not depend on past context.
+
+The default `recall_nudge_message` is:
+
+> You have not recalled memory recently. Consider whether hindsight_recall would provide useful context for the current request.
+
+Nudges are always wrapped in `<hindsight_recall_nudge>...</hindsight_recall_nudge>` so the model can tell they are automatic rather than user-authored.
 | `homedir_project` | `true` | Treat home directory as a project. Set `false` to prevent creating a `<username>` bank when running from your home directory. Recall and retain use only `global_bank` instead. |
 | `global_bank` | _(none)_ | Bank ID for cross-project memory. When set, this bank is queried alongside the project bank on every recall. Turns tagged `#global` or `#me` are also retained here. Leave unset if you only want per-project memory. |
 
@@ -174,7 +184,7 @@ Global: global-bank
 
 Hooks this session:
   session_start:      ✓ ok
-  recall:             ✓ ok (hint inserted)
+  recall:             ✓ ok (nudge indicator)
   retain:             ✓ ok (myapp)
 
 Debug log: disabled (set HINDSIGHT_DEBUG=1 to enable)
@@ -191,7 +201,7 @@ Interactive settings menu. View all current settings with their source (global, 
 Use this to opt out a project from memory:
 ```
 /hindsight settings
-→ Recall Hint: true [default]  →  toggle Off  →  save to Project
+→ Recall Hints: true [default]  →  toggle Off  →  save to Project
 → Auto-Retain: true [default]  →  toggle Off  →  save to Project
 ```
 
@@ -258,7 +268,7 @@ This section aims to help you pick the right one. Both are good.
 | Dimension | **pi-hindsight** | **@walodayeet/hindsight-pi** |
 |---|---|---|
 | Trigger | `before_agent_start` system-prompt hint | `before_agent_start` or `context` hook |
-| Injection frequency | First turn, then every N turns without a recall call | Explicit: `first-turn` or `every-turn` |
+| Injection frequency | Stable system hint; append-only nudge after N turns without recall | Explicit: `first-turn` or `every-turn` |
 | Recall modes | Hint-driven tool choice + manual tools | `hybrid`, `context`, `tools`, or `off` |
 | Dual-bank recall | `hindsight_recall` queries global + project in parallel | Queries primary bank + optional `globalBankId` |
 | Recall types | Configurable, defaults to `observation` | Configurable per-type with `recallPerType` count |
@@ -269,7 +279,7 @@ This section aims to help you pick the right one. Both are good.
 
 - **Recall modes.** `@walodayeet/hindsight-pi` lets you set `recallMode: tools` to skip auto-injection entirely. This extension uses a hint-driven tool mode: the agent decides when to call `hindsight_recall`, so there is no blocking recall request from `before_agent_start`.
 - **Dual-bank recall.** Both extensions query multiple banks. This extension's `hindsight_recall` tool queries global + project banks in parallel, so cross-project knowledge is available on demand. `@walodayeet/hindsight-pi` does the same when `globalBankId` is configured, plus supports linked banks for multi-server setups.
-- **Injection frequency.** This extension inserts a system hint on the first turn and then only after `recall_hint_interval` turns without a recall call. If the agent recalls every turn, the hint does not come back.
+- **Injection frequency.** This extension keeps a stable system hint and appends a nudge only after `recall_hint_interval` turns without a recall call. If the agent recalls every turn, the nudge does not appear.
 - **Retry logic.** This extension retries rate-limited `hindsight_recall` requests. `@walodayeet/hindsight-pi` does not retry recall, but retries retain writes with a 1.5s backoff.
 
 ### Retain
