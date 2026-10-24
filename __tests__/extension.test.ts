@@ -7,7 +7,12 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 
-import hindsightExtension, { getConfig, parseConfigFile, redactSecrets } from "../index.ts";
+import hindsightExtension, {
+  DEFAULT_RECALL_HINT_MESSAGE,
+  getConfig,
+  parseConfigFile,
+  redactSecrets,
+} from "../index.ts";
 
 type Handler = (event: any, ctx: any) => Promise<unknown> | unknown;
 
@@ -67,6 +72,16 @@ function makeCtx(prompt = "please remember this important implementation detail"
   };
 }
 
+function makeBeforeAgentStartEvent() {
+  return {
+    type: "before_agent_start",
+    messageType: "user",
+    prompt: "test prompt",
+    systemPrompt: "base system prompt",
+    systemPromptOptions: { sections: {} },
+  } as any;
+}
+
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -116,6 +131,8 @@ describe("config parsing", () => {
       'recall_budget = "HIGH"',
       'recall_types = "observation,unknown,experience"',
       'recall_timeout = "0"',
+      'recall_hint_interval = "0"',
+      'recall_hint_message = "Custom memory hint."',
       'reflect_timeout = "not-a-number"',
       'retain_timeout = "45000"',
       'async_retain = "False"',
@@ -130,6 +147,8 @@ describe("config parsing", () => {
     expect(config!.recall_budget).toBe("high");
     expect(config!.recall_types).toEqual(["observation", "experience"]);
     expect(config!.recall_timeout).toBeUndefined();
+    expect(config!.recall_hint_interval).toBe(0);
+    expect(config!.recall_hint_message).toBe("Custom memory hint.");
     expect(config!.reflect_timeout).toBeUndefined();
     expect(config!.retain_timeout).toBe(45000);
     expect(config!.async_retain).toBe(false);
@@ -160,50 +179,114 @@ describe("secret redaction", () => {
   });
 });
 
-describe("recall lifecycle", () => {
+describe("recall hint lifecycle", () => {
   beforeEach(() => setupTempHome());
   afterEach(() => {
     teardownTempHome();
     vi.unstubAllGlobals();
   });
 
-  it("injects project and global memories with untrusted-data framing", async () => {
+  async function emitTurn(pi: ReturnType<typeof makePiMock>, ctx: any, recall: boolean) {
+    const event = makeBeforeAgentStartEvent();
+    await pi.emit("before_agent_start", event, ctx);
+    if (recall) {
+      await pi.tools
+        .get("hindsight_recall")
+        .execute("call-1", { query: "test query" }, undefined, undefined, ctx);
+    }
+    await pi.emit("agent_settled", {}, ctx);
+    return event;
+  }
+
+  it("inserts a system hint on the first turn instead of querying memory", async () => {
     const pi = makePiMock();
     const ctx = makeCtx();
-    const fetchMock = vi.fn(async (url: string) =>
-      jsonResponse({ results: [{ text: url.includes("/global/") ? "Global fact" : "Project fact" }] }),
-    );
+    const fetchMock = vi.fn(async () => jsonResponse({ results: [{ text: "Should not be fetched" }] }));
     vi.stubGlobal("fetch", fetchMock);
     hindsightExtension(pi as any);
 
-    const result: any = await pi.emit("before_agent_start", {}, ctx);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result.message.content).toContain("untrusted reference data");
-    expect(result.message.content).toContain("Global fact");
-    expect(result.message.content).toContain("Project fact");
-    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)));
-    expect(bodies.every((body) => body.query === ctx.sessionManager.getEntries()[0].message.content)).toBe(true);
+    const event = makeBeforeAgentStartEvent();
+    const result = await pi.emit("before_agent_start", event, ctx);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
+    expect(event.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Hindsight: recall hint inserted", "info");
   });
 
-  it("honors Retry-After within the request timeout", async () => {
-    writeConfig(['global_bank = ""']);
+  it("uses a configured hint message", async () => {
+    writeConfig(['recall_hint_message = "Custom memory hint."']);
     const pi = makePiMock();
     const ctx = makeCtx();
-    let attempt = 0;
-    const fetchMock = vi.fn(async () => {
-      attempt++;
-      if (attempt === 1) {
-        return new Response("TooManyRequestsError", { status: 429, headers: { "Retry-After": "0" } });
-      }
-      return jsonResponse({ results: [{ text: "Recovered after retry" }] });
-    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({})));
+    hindsightExtension(pi as any);
+
+    const event = await emitTurn(pi, ctx, false);
+
+    expect(event.systemPromptOptions.sections.hindsight_recall_hint).toBe("Custom memory hint.");
+    expect(event.systemPromptOptions.sections.hindsight_recall_hint).not.toBe(DEFAULT_RECALL_HINT_MESSAGE);
+  });
+
+  it("reinserts the hint after a turn without a recall call", async () => {
+    const pi = makePiMock();
+    const ctx = makeCtx();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({})));
+    hindsightExtension(pi as any);
+
+    const first = await emitTurn(pi, ctx, false);
+    expect(first.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+
+    const second = await emitTurn(pi, ctx, false);
+    expect(second.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+  });
+
+  it("suppresses the hint after a turn that called the recall tool", async () => {
+    const pi = makePiMock();
+    const ctx = makeCtx();
+    const fetchMock = vi.fn(async () => jsonResponse({ results: [] }));
     vi.stubGlobal("fetch", fetchMock);
     hindsightExtension(pi as any);
 
-    const result: any = await pi.emit("before_agent_start", {}, ctx);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result.message.content).toContain("Recovered after retry");
-    expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("hindsight", "✗ rate-limited");
+    const first = await emitTurn(pi, ctx, true);
+    expect(first.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(fetchMock).toHaveBeenCalled();
+
+    ctx.ui.notify.mockClear();
+    const second = await emitTurn(pi, ctx, false);
+    expect(second.systemPromptOptions.sections.hindsight_recall_hint).toBeUndefined();
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith("Hindsight: recall hint inserted", "info");
+  });
+
+  it("waits for the configured number of turns without recall", async () => {
+    writeConfig(['recall_hint_interval = "2"']);
+    const pi = makePiMock();
+    const ctx = makeCtx();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({})));
+    hindsightExtension(pi as any);
+
+    const first = await emitTurn(pi, ctx, false);
+    const second = await emitTurn(pi, ctx, false);
+    const third = await emitTurn(pi, ctx, false);
+
+    expect(first.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(second.systemPromptOptions.sections.hindsight_recall_hint).toBeUndefined();
+    expect(third.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+  });
+
+  it("hints every turn when the interval is 0", async () => {
+    writeConfig(['recall_hint_interval = "0"']);
+    const pi = makePiMock();
+    const ctx = makeCtx();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ results: [] })));
+    hindsightExtension(pi as any);
+
+    const first = await emitTurn(pi, ctx, true);
+    ctx.ui.notify.mockClear();
+    const second = await emitTurn(pi, ctx, false);
+
+    expect(first.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(second.systemPromptOptions.sections.hindsight_recall_hint).toBe(DEFAULT_RECALL_HINT_MESSAGE);
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Hindsight: recall hint inserted", "info");
   });
 });
 

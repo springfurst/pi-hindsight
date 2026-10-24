@@ -2,14 +2,14 @@
 
 ## Recall latency benchmarks
 
-Tested against a self-hosted Hindsight server (2 vCPU / 8 GB RAM) backed by Supabase free tier (shared CPU, pgvector). Pi queries two banks in parallel on every first prompt — one global bank and one project bank.
+Tested against a self-hosted Hindsight server (2 vCPU / 8 GB RAM) backed by Supabase free tier (shared CPU, pgvector). When the agent calls `hindsight_recall`, Pi queries two banks in parallel — one global bank and one project bank. Recall is no longer triggered automatically by every prompt; the latency below applies only when the agent chooses to recall.
 
 **Setup:**
 - Hindsight server: 2 vCPU / 8 GB RAM, local network (~50ms RTT)
 - Database: Supabase free tier, session pooler mode
 - Embedding: Gemini `embedding-001` (remote API)
 - Banks: 68 memory units (global), 182 memory units (project)
-- Query pattern: 2 parallel recall requests (global + project bank)
+- Query pattern: 2 parallel `hindsight_recall` requests (global + project bank)
 
 **Results after HNSW index on `memory_units`:**
 
@@ -46,7 +46,7 @@ In order of impact:
 
 3. **Gemini embedding API latency** — ~0.5–1s fixed cost per recall request, unavoidable.
 
-4. **Parallel vs sequential queries** — Pi queries both banks in parallel. Pre-index, this caused severe contention (17–36s). Post-index, parallel is faster than sequential (~4s wall vs ~6s sequential) because Supabase can handle two HNSW queries concurrently once the index is in place.
+4. **Parallel vs sequential queries** — `hindsight_recall` queries both banks in parallel. Pre-index, this caused severe contention (17–36s). Post-index, parallel is faster than sequential (~4s wall vs ~6s sequential) because Supabase can handle two HNSW queries concurrently once the index is in place.
 
 5. **`max_tokens` does not affect latency** — the server does the same work regardless of how many results it returns. Lower `max_tokens` only reduces context injection size.
 

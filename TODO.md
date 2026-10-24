@@ -4,7 +4,7 @@
 
 ### Ours
 
-- Recall: `before_agent_start`, blocking, no timeout
+- Recall: on-demand `hindsight_recall` tool, prompted by a configurable system-prompt hint
 - Retain: `agent_end`, async with `Promise.allSettled`
 - Tools: `hindsight_recall`, `hindsight_retain`, `hindsight_reflect`
 - Commands: `/hindsight [status|stats|config]`
@@ -27,8 +27,7 @@
 
 ### They do better
 
-- **`injectionFrequency: first-turn`** — explicit, prompt-cache-friendly (we do this implicitly via `recallDone` flag, same effect but less clear)
-- **`recallMode: tools`** — skips auto-injection entirely, recall only via explicit tool call. Eliminates the `before_agent_start` block — fixes cold-start latency
+- **`injectionFrequency: first-turn`** — explicit, prompt-cache-friendly (we now hint on the first turn and after N turns without recall)
 - **`retain write frequencies`** — `async`, `session`, `N-turn batch`. We always fire synchronously at `agent_end` → steal this
 - **`/hindsight:where`** — shows which config file won precedence
 - **`/hindsight:setup`** wizard, **`/hindsight:doctor`** preflight
